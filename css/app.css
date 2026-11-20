@@ -118,3 +118,12 @@ video.scan { width: 100%; border-radius: 12px; background: #000; max-height: 50v
 .login-logo { display: block; width: 84px; height: 84px; border-radius: 20px; margin: 0 auto 10px; }
 .userpick { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .userpick button { text-align: left; }
+
+/* v1.2: HOLD, noteikumi, brīdinājums par aizbraukšanu */
+.status.hold { background: #fff4d6; border: 2px solid #c98a00; } .status.hold .big { color: #7a5000; }
+.tl-b.hold { background: #ffe9ad; border-left-color: #c98a00; z-index: 1; cursor: default; }
+.alert-away { background: var(--red); color: #fff; border-radius: 12px; padding: 14px; margin-bottom: 12px; font-weight: 600; animation: boxpulse 1.2s infinite; }
+.alert-away .btn.ghost { background: #fff; color: var(--ink); }
+@keyframes boxpulse { 50% { opacity: .78; } }
+.rules p { margin: 0 0 10px; line-height: 1.45; }
+textarea { font-size: 14px; line-height: 1.45; resize: vertical; }

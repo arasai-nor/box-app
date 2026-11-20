@@ -7,7 +7,7 @@ const api = CONFIG.SUPABASE_URL
   : createDemoApi();
 
 const $app = document.getElementById('app');
-const state = { session: null, settings: null, timers: [] };
+const state = { session: null, settings: null, rules: null, timers: [], geoWatch: null };
 const MIN = 60000;
 
 // ===================================================================
@@ -84,7 +84,44 @@ function parseHash() {
   const [path, qs] = location.hash.replace(/^#/, '').split('?');
   return { parts: (path || '/').split('/').filter(Boolean), q: new URLSearchParams(qs || '') };
 }
-function clearTimers() { state.timers.forEach(clearInterval); state.timers = []; }
+function clearTimers() {
+  state.timers.forEach(clearInterval); state.timers = [];
+  if (state.geoWatch != null) { try { navigator.geolocation.clearWatch(state.geoWatch); } catch {} state.geoWatch = null; }
+}
+function distanceM(lat1, lng1, lat2, lng2) {
+  const r = x => x * Math.PI / 180;
+  const a = Math.sin(r(lat2 - lat1) / 2) ** 2 + Math.cos(r(lat1)) * Math.cos(r(lat2)) * Math.sin(r(lng2 - lng1) / 2) ** 2;
+  return 2 * 6371000 * Math.asin(Math.sqrt(a));
+}
+const telHref = p => 'tel:' + String(p || '').replace(/[^\d+]/g, '');
+const waHref = p => 'https://wa.me/' + String(p || '').replace(/\D/g, '');
+function contactButtons(phone) {
+  if (!phone) return '';
+  return `<div class="grid2" style="margin-top:10px"><a class="btn ghost" href="${telHref(phone)}">📞 Zvanīt</a>
+    <a class="btn wa" target="_blank" rel="noopener" href="${waHref(phone)}">WhatsApp</a></div>`;
+}
+const rulesHtml = body => String(body || '').split('\n').filter(l => l.trim()).map(l => `<p>${esc(l)}</p>`).join('');
+// Brīdinājums, ja lietotājs ir iečekots, bet telefons vairs nav pie BOX (darbojas, kamēr aplikācija ir atvērta)
+function watchAway(status) {
+  const st = state.settings;
+  if (!st?.geo_enabled || !navigator.geolocation || st.box_lat == null) return;
+  state.geoWatch = navigator.geolocation.watchPosition(p => {
+    const el = document.getElementById('away'); if (!el) return;
+    const d = distanceM(p.coords.latitude, p.coords.longitude, st.box_lat, st.box_lng);
+    const away = d > st.geo_radius_m + Math.min(p.coords.accuracy || 0, 100);
+    el.hidden = !away;
+    if (!away) return;
+    const key = 'box_away_' + status.session_id;
+    let seen = false; try { seen = !!sessionStorage.getItem(key); sessionStorage.setItem(key, '1'); } catch {}
+    if (seen) return;
+    try { navigator.vibrate?.([400, 200, 400, 200, 400]); } catch {}
+    if ('Notification' in window && Notification.permission === 'granted' && navigator.serviceWorker) {
+      navigator.serviceWorker.ready.then(reg => reg.showNotification('BOX: tu neesi izčekojies!', {
+        body: 'Tu esi aizbraucis no BOX, bet skaitītājs turpina skaitīt. Atgriezies un izčekojies vai sazinies ar adminu.',
+        icon: 'icons/icon-192.png', badge: 'icons/icon-192.png', tag: 'box-away', requireInteraction: true })).catch(() => {});
+    }
+  }, () => {}, { enableHighAccuracy: true, maximumAge: 30000, timeout: 20000 });
+}
 // Telefona atrašanās vieta (ja pārbaude ieslēgta). Atgriež null, ja pārbaude izslēgta.
 function getPosition(force = false) {
   return new Promise((res, rej) => {
@@ -179,30 +216,60 @@ function viewPending() {
   $app.querySelector('#out').onclick = async () => { await api.signOut(); boot(); };
 }
 
+function viewRules() {
+  const r = state.rules;
+  $app.innerHTML = `<div class="login-wrap" style="max-width:560px"><img class="login-logo" src="icons/icon-192.png" alt="">
+    <h2 class="center">BOX noteikumi</h2>
+    <p class="muted center small">Lai lietotu aplikāciju, izlasi noteikumus un apstiprini tos. Tie ir vienādi visiem dalībniekiem.</p>
+    <div class="card rules">${rulesHtml(r.body)}<p class="muted small" style="margin:0">Versija ${r.version} · ${fDate(r.published_at)}</p></div>
+    <label class="row" style="gap:10px;color:var(--ink);font-size:16px"><input type="checkbox" id="agree" style="width:24px;height:24px;flex:0 0 auto"> Esmu izlasījis noteikumus un piekrītu tiem</label>
+    <div class="sp"></div><button class="btn green block lg" id="ok" disabled>Piekrītu un turpinu</button>
+    <div class="sp"></div><button class="btn ghost block" id="out">Iziet</button></div>`;
+  const ok = $app.querySelector('#ok');
+  $app.querySelector('#agree').onchange = e => { ok.disabled = !e.target.checked; };
+  ok.onclick = async () => { await run(() => api.acceptRules(r.version), 'Noteikumi apstiprināti'); boot(); };
+  $app.querySelector('#out').onclick = async () => { await api.signOut(); state.session = null; boot(); };
+}
+
 // ===================================================================
 // Sākums
 // ===================================================================
 async function viewHome(q) {
   const main = shell('', '<div class="loading">Ielādē…</div>');
   const now = new Date();
-  const [status, todays, upcoming] = await Promise.all([
+  const [status, todays, upcoming, , hold] = await Promise.all([
     api.boxStatus(),
     api.listBookings(startOfDay(now).toISOString(), addDays(startOfDay(now), 1).toISOString()),
     api.listBookings(now.toISOString(), addDays(now, 60).toISOString()),
     api.getSettings().then(s => { state.settings = s; }),
+    api.boxHold(),
   ]);
   const mine = status && status.user_id === me().id;
+  let adminPhone = '';
+  if (mine) { try { adminPhone = (await api.listProfiles()).find(p => p.role === 'admin' && p.active && p.phone && p.id !== me().id)?.phone || ''; } catch {} }
   const myNext = upcoming.filter(b => b.user_id === me().id && b.status === 'active');
 
   let statusHtml;
-  if (!status) {
+  if (hold) {
+    const holdMine = hold.user_id === me().id;
+    statusHtml = `<div class="status hold"><div class="big">⏸ HOLD — BOX apturēts</div>
+      <div><b>${esc(hold.full_name)}</b>${holdMine ? ' (tu)' : ''}</div>
+      <div class="small">kopš ${fDT(hold.starts_at)} · līdz aptuveni <b>${fDT(hold.expected_end)}</b></div>
+      ${hold.reason ? `<div class="small" style="margin-top:4px">Iemesls: ${esc(hold.reason)}</div>` : ''}
+      <div class="muted small" style="margin-top:8px">Kamēr ir HOLD, BOX nevar rezervēt un tajā nevar iečekoties. HOLD uzliek un beidz admins.</div>
+      ${holdMine ? '' : contactButtons(hold.phone)}
+      ${isAdmin() ? `<div class="sp"></div><a class="btn sm primary" href="#/admin/hold">Pārvaldīt HOLD</a>` : ''}</div>`;
+  } else if (!status) {
     const next = upcoming.find(b => b.status === 'active' && new Date(b.starts_at) > now);
     statusHtml = `<div class="status free"><div class="big">● BOX BRĪVS</div>
       <div class="muted small">${next ? `Nākamā rezervācija: ${fDT(next.starts_at)} — ${esc(next.full_name)}` : 'Tuvākajā laikā nav rezervāciju'}</div>
       <div class="sp"></div><button class="btn green block lg" id="cin">Iečekoties BOX</button>
-      <button class="btn sm ghost block" id="rep" style="margin-top:8px">⚠ BOX nav atbrīvots — stāv cits auto</button></div>`;
+      <button class="btn sm ghost block" id="rep" style="margin-top:8px">⚠ BOX nav atbrīvots — stāv cits auto</button>
+      ${isAdmin() ? `<a class="btn sm ghost block" href="#/admin/hold" style="margin-top:8px">⏸ Uzlikt HOLD</a>` : ''}</div>`;
   } else if (mine) {
-    statusHtml = `<div class="status mine"><div class="big">● TU STRĀDĀ BOX</div>
+    statusHtml = `<div class="status mine">
+      <div id="away" class="alert-away" hidden>🚨 Tu esi aizbraucis no BOX neizčekojies! Skaitītājs turpina skaitīt stundas. Atgriezies BOX un izčekojies vai sazinies ar adminu.${contactButtons(adminPhone)}</div>
+      <div class="big">● TU STRĀDĀ BOX</div>
       <div class="muted small">Iečekojies ${fTime(status.checked_in_at)}${status.booking_ends ? ` · rezervēts līdz ${fTime(status.booking_ends)}` : ''}</div>
       <div class="timer" id="tm">—</div><div id="tc" class="muted"></div>
       <div id="over" class="err"></div>
@@ -213,7 +280,7 @@ async function viewHome(q) {
       <div><b>${esc(status.full_name)}</b>${status.car ? ` · ${esc(status.car)}` : ''}</div>
       <div class="muted small">no ${fTime(status.checked_in_at)}${status.booking_ends ? `, rezervēts līdz ${fTime(status.booking_ends)}` : ''}</div>
       ${status.reported_by ? `<div class="err small">⚠ ${esc(status.reported_by)} ziņoja, ka BOX nav atbrīvots</div>` : ''}
-      ${isAdmin() ? `<div class="sp"></div><button class="btn sm ghost" id="acout">Izčekot (admins)</button>` : ''}</div>`;
+      ${isAdmin() ? `<div class="sp"></div><div class="row"><button class="btn sm ghost" id="acout">Izčekot (admins)</button><a class="btn sm ghost" href="#/admin/hold">⏸ Uzlikt HOLD</a></div>` : ''}</div>`;
   }
 
   main.innerHTML = `
@@ -256,6 +323,7 @@ async function viewHome(q) {
   });
 
   if (mine) {
+    watchAway(status);
     const tick = () => {
       const m = (Date.now() - new Date(status.checked_in_at)) / MIN;
       const el = document.getElementById('tm'); if (!el) return;
@@ -287,6 +355,7 @@ function openCheckIn(prefill = '') {
     const go = async (code) => {
       stop();
       try {
+        if ('Notification' in window && Notification.permission === 'default') { try { Notification.requestPermission().catch(() => {}); } catch {} }
         await api.checkIn(code, await getPosition());
         close(); toast('Iečekojies! Veiksmīgu darbu 🔧');
         location.hash = '#/'; viewHome();
@@ -329,14 +398,16 @@ async function viewCalendar(q) {
 
   async function draw() {
     const from = weekStart, to = addDays(weekStart, 14);
-    const all = await api.listBookings(from.toISOString(), to.toISOString());
+    const [all, holdsAll] = await Promise.all([api.listBookings(from.toISOString(), to.toISOString()), api.listHolds()]);
+    const holds = holdsAll.map(h => ({ ...h, s: new Date(h.starts_at), e: new Date(h.ended_at || Math.max(new Date(h.expected_end), Date.now())) }));
     const dayBk = all.filter(b => new Date(b.starts_at) < addDays(sel, 1) && new Date(b.ends_at) > sel);
     const HP = 44; // px stundā
     main.innerHTML = `
       <div class="row" style="margin-bottom:8px"><h2 class="grow" style="margin:0">Kalendārs</h2>
         <button class="btn sm ghost" id="prev">‹</button><button class="btn sm ghost" id="tdy">Šodien</button><button class="btn sm ghost" id="next">›</button></div>
       <div class="days">${Array.from({ length: 14 }, (_, i) => {
-        const d = addDays(from, i); const has = all.some(b => new Date(b.starts_at) < addDays(d, 1) && new Date(b.ends_at) > d);
+        const d = addDays(from, i);
+        const has = all.some(b => new Date(b.starts_at) < addDays(d, 1) && new Date(b.ends_at) > d) || holds.some(h => h.s < addDays(d, 1) && h.e > d);
         return `<div class="day ${+d === +sel ? 'on' : ''} ${+d === +today ? 'today' : ''} ${has ? 'has' : ''}" data-d="${ymd(d)}">
           <div class="dw">${DOW[d.getDay()]}</div><div class="dn">${d.getDate()}</div><div class="dot"></div></div>`;
       }).join('')}</div>
@@ -350,9 +421,14 @@ async function viewCalendar(q) {
           return `<div class="tl-b ${b.user_id === me().id ? 'mine' : ''} ${b.status === 'completed' ? 'done' : ''}" data-b="${b.id}" style="top:${top}px;height:${hgt}px">
             <b>${fTime(b.starts_at)}–${fTime(b.ends_at)}</b> ${esc(b.full_name)}${b.note ? ' · ' + esc(b.note) : ''}</div>`;
         }).join('')}
+        ${holds.filter(h => h.s < addDays(sel, 1) && h.e > sel).map(h => {
+          const s = Math.max(h.s, sel), e = Math.min(h.e, addDays(sel, 1));
+          return `<div class="tl-b hold" style="top:${(s - sel) / 3600000 * HP}px;height:${Math.max(18, (e - s) / 3600000 * HP - 2)}px">
+            <b>⏸ HOLD</b> ${esc(h.full_name)}${h.reason ? ' · ' + esc(h.reason) : ''}${h.ended_at ? '' : ' · līdz aptuveni ' + fDT(h.expected_end)}</div>`;
+        }).join('')}
         ${+sel === +today ? `<div class="tl-now" style="top:${(Date.now() - today) / 3600000 * HP}px"></div>` : ''}
       </div></div>
-      <p class="muted small">🔵 tavas rezervācijas · 🔴 citu · Pieskaries brīvai stundai, lai rezervētu.</p>`;
+      <p class="muted small">🔵 tavas rezervācijas · 🔴 citu · 🟡 HOLD · Pieskaries brīvai stundai, lai rezervētu.</p>`;
     const tl = main.querySelector('#tl');
     tl.scrollTop = Math.max(0, ((+sel === +today ? new Date().getHours() - 1 : 7)) * HP);
     main.querySelectorAll('.day').forEach(el => el.onclick = () => { sel = startOfDay(new Date(el.dataset.d + 'T00:00:00')); draw(); });
@@ -361,7 +437,7 @@ async function viewCalendar(q) {
     main.querySelector('#tdy').onclick = () => { weekStart = today; sel = today; draw(); };
     main.querySelector('#add').onclick = () => bookForm(sel, null, all, draw);
     main.querySelectorAll('.tl-hour').forEach(el => el.onclick = () => bookForm(sel, +el.dataset.h, all, draw));
-    main.querySelectorAll('.tl-b').forEach(el => el.onclick = () => {
+    main.querySelectorAll('.tl-b[data-b]').forEach(el => el.onclick = () => {
       const b = dayBk.find(x => x.id === +el.dataset.b);
       const can = (b.user_id === me().id || isAdmin()) && b.status === 'active' && new Date(b.starts_at) > Date.now() - 0;
       modal(`<h3>${esc(b.full_name)}</h3><p>${fDay(b.starts_at)}<br><b>${fTime(b.starts_at)}–${fTime(b.ends_at)}</b> (${fDur((new Date(b.ends_at) - new Date(b.starts_at)) / MIN)})
@@ -422,7 +498,7 @@ async function viewAccount() {
   const thisMonth = sessions.filter(s => s.checked_out_at && new Date(s.checked_out_at) >= mf);
   const tmMin = thisMonth.reduce((a, s) => a + s.billed_minutes, 0), tmEur = thisMonth.reduce((a, s) => a + +s.amount, 0);
   const balance = ledger.reduce((a, l) => a + +l.amount, 0);
-  const kindLv = { usage: 'Lietošana', work: 'Darbs BOX labā', cash: 'Skaidra nauda', adjustment: 'Korekcija' };
+  const kindLv = { usage: 'Lietošana', work: 'Darbs BOX labā', cash: 'Skaidra nauda', adjustment: 'Korekcija', hold: 'HOLD' };
   const p = me();
   main.innerHTML = `
     <h2>Mans konts</h2>
@@ -446,8 +522,15 @@ async function viewAccount() {
       <label>Telefons</label><input name="phone" value="${esc(p.phone)}">
       <label>Auto</label><input name="car" value="${esc(p.car)}">
       <div class="sp"></div><button class="btn primary block">Saglabāt</button></form></div>
+    <button class="btn ghost block" id="rules">📋 BOX noteikumi</button><div class="sp"></div>
     <button class="btn ghost block" id="out">Iziet no konta</button>
-    <p class="center muted small">BOX v1.1</p>`;
+    <p class="center muted small">BOX v1.2</p>`;
+  main.querySelector('#rules').onclick = () => {
+    const r = state.rules;
+    modal(`<h3>BOX noteikumi</h3><div class="rules">${rulesHtml(r.body)}</div>
+      <p class="muted small">Versija ${r.version}${r.accepted_at ? ` · tu apstiprināji ${fDT(r.accepted_at)}` : ''}</p>
+      <button class="btn primary block" data-close>Aizvērt</button>`);
+  };
   main.querySelector('#pf').onsubmit = async e => {
     e.preventDefault(); const d = Object.fromEntries(new FormData(e.target));
     await run(() => api.updateMyProfile(d), 'Saglabāts'); Object.assign(state.session.profile, d);
@@ -497,7 +580,7 @@ async function viewCash() {
 // ===================================================================
 // Administrators
 // ===================================================================
-const ADMIN_TABS = [['lietotaji', 'Lietotāji'], ['ieluigumi', 'Ielūgumi'], ['menesis', 'Mēneša atskaite'], ['norekini', 'Norēķini'], ['zinojumi', 'Ziņojumi'],
+const ADMIN_TABS = [['lietotaji', 'Lietotāji'], ['ieluigumi', 'Ielūgumi'], ['menesis', 'Mēneša atskaite'], ['norekini', 'Norēķini'], ['zinojumi', 'Ziņojumi'], ['hold', 'HOLD'], ['noteikumi', 'Noteikumi'],
   ['iestatijumi', 'Iestatījumi un QR'], ['iekartas', 'Iekārtas']];
 
 async function viewAdmin(sub, q) {
@@ -505,7 +588,7 @@ async function viewAdmin(sub, q) {
   sub = sub || 'lietotaji';
   const main = shell('admin', `<div class="tabs">${ADMIN_TABS.map(([k, t]) => `<a href="#/admin/${k}" class="${k === sub ? 'on' : ''}">${t}</a>`).join('')}</div><div id="ad"><div class="loading">Ielādē…</div></div>`);
   const el = main.querySelector('#ad');
-  const fn = { lietotaji: adUsers, ieluigumi: adInvites, menesis: adMonth, norekini: adPay, zinojumi: adReports, iestatijumi: adSettings, iekartas: adDevices }[sub] || adUsers;
+  const fn = { lietotaji: adUsers, ieluigumi: adInvites, menesis: adMonth, norekini: adPay, zinojumi: adReports, hold: adHold, noteikumi: adRules, iestatijumi: adSettings, iekartas: adDevices }[sub] || adUsers;
   await fn(el, q);
 }
 
@@ -596,7 +679,7 @@ async function adMonth(el, q) {
 
 async function adPay(el) {
   const [users, bal, led] = await Promise.all([api.listProfiles(), api.balances(), api.listLedgerAll()]);
-  const kindLv = { usage: 'Lietošana', work: 'Darbs BOX labā', cash: 'Skaidra nauda', adjustment: 'Korekcija' };
+  const kindLv = { usage: 'Lietošana', work: 'Darbs BOX labā', cash: 'Skaidra nauda', adjustment: 'Korekcija', hold: 'HOLD' };
   el.innerHTML = `
     <div class="card"><h3>Atlikumi</h3><table><tr><th>Lietotājs</th><th class="num">Parāds BOX kasei</th></tr>
       ${bal.map(b => `<tr><td>${esc(b.full_name)}</td><td class="num money" style="color:${+b.balance > 0 ? 'var(--red)' : 'var(--ink)'}">${fEur(b.balance)}</td></tr>`).join('')}</table></div>
@@ -698,6 +781,67 @@ async function adReports(el) {
   });
 }
 
+async function adHold(el) {
+  const [hold, users, holds, status] = await Promise.all([api.boxHold(), api.listProfiles(), api.listHolds(), api.boxStatus()]);
+  const past = holds.filter(h => h.ended_at);
+  const dflt = new Date(Date.now() + 2 * 86400000); dflt.setHours(18, 0, 0, 0);
+  const dtVal = d => { d = new Date(d); return `${ymd(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+  el.innerHTML = `
+    ${hold ? `<div class="status hold"><div class="big">⏸ HOLD ir aktīvs</div>
+        <div><b>${esc(hold.full_name)}</b></div><div class="small">kopš ${fDT(hold.starts_at)}</div>
+        <form id="uf"><label>Līdz aptuveni</label><input type="datetime-local" name="end" value="${dtVal(hold.expected_end)}" required>
+          <label>Iemesls (redz visi)</label><input name="reason" value="${esc(hold.reason || '')}" maxlength="120">
+          <div class="sp"></div><button class="btn ghost block">Saglabāt izmaiņas</button></form>
+        <div class="sp"></div><button class="btn red block lg" id="end">Beigt HOLD</button></div>`
+    : `<div class="card"><h3>⏸ Uzlikt HOLD</h3>
+        <p class="muted small">Avārijas vai ilga remonta gadījumā BOX tiek apturēts konkrētam dalībniekam. Visi to redz sākuma ekrānā un kalendārā. Citu rezervācijas šajā laikā tiek atceltas, un iečekoties nevar. Stundu skaitītājs HOLD laikā neskaita: summu, par ko vienojaties, ieraksti, beidzot HOLD.</p>
+        ${status ? `<p class="err small">Šobrīd BOX ir iečekojies ${esc(status.full_name)}. Ja HOLD ir viņam, viņa sesija tiks noslēgta ar parasto maksu līdz šim brīdim.</p>` : ''}
+        <form id="sf"><label>Dalībnieks</label><select name="user" required>${users.filter(u => u.active).map(u => `<option value="${u.id}" ${status?.user_id === u.id ? 'selected' : ''}>${esc(u.full_name)}</option>`).join('')}</select>
+          <label>Līdz aptuveni</label><input type="datetime-local" name="end" value="${dtVal(dflt)}" required>
+          <label>Iemesls (redz visi)</label><input name="reason" maxlength="120" placeholder="piem. motora remonts, gaida detaļu">
+          <div class="sp"></div><button class="btn primary block">Uzlikt HOLD</button></form></div>`}
+    <div class="card"><h3>HOLD vēsture</h3>${past.length ? `<ul class="list">${past.map(h => `<li class="row"><div class="grow"><b>${esc(h.full_name)}</b><br>
+      <span class="small muted">${fDT(h.starts_at)} – ${fDT(h.ended_at)}${h.reason ? ' · ' + esc(h.reason) : ''}</span></div><div class="money">${fEur(h.amount || 0)}</div></li>`).join('')}</ul>`
+      : '<p class="muted small">Vēl nav bijis.</p>'}</div>`;
+  el.querySelector('#sf')?.addEventListener('submit', async e => {
+    e.preventDefault(); const f = e.target; const who = f.user.selectedOptions[0].textContent;
+    if (!(await confirmBox(`Uzlikt HOLD: ${who}? Citu rezervācijas līdz šim laikam tiks atceltas.`, 'Uzlikt HOLD', 'red'))) return;
+    await run(() => api.startHold(f.user.value, new Date(f.end.value).toISOString(), f.reason.value), 'HOLD uzlikts'); adHold(el);
+  });
+  el.querySelector('#uf')?.addEventListener('submit', async e => {
+    e.preventDefault(); const f = e.target;
+    await run(() => api.updateHold(hold.id, new Date(f.end.value).toISOString(), f.reason.value), 'Saglabāts'); adHold(el);
+  });
+  el.querySelector('#end')?.addEventListener('click', () => {
+    const mins = (Date.now() - new Date(hold.starts_at)) / MIN;
+    modal(`<h3>Beigt HOLD</h3><p><b>${esc(hold.full_name)}</b>: HOLD ilga ${fDur(mins)}. Pēc parastās likmes tas būtu ${fEur(mins / 60 * state.settings.hourly_rate)}.</p>
+      <label>Summa, par ko vienojāties (€) — 0, ja bez maksas</label><input id="amt" type="number" min="0" step="0.5" value="0">
+      <label>Piezīme (nav obligāti)</label><input id="nt" maxlength="120">
+      <div class="err" id="err"></div>
+      <div class="grid2" style="margin-top:14px"><button class="btn ghost" data-close>Atcelt</button><button class="btn red" id="ok">Beigt HOLD</button></div>`,
+    (m, close) => { m.querySelector('#ok').onclick = async () => {
+      try { await api.endHold(hold.id, +m.querySelector('#amt').value || 0, m.querySelector('#nt').value); close(); toast('HOLD beigts — BOX atkal strādā parastajā režīmā'); adHold(el); }
+      catch (x) { m.querySelector('#err').textContent = x.message; }
+    }; });
+  });
+}
+
+async function adRules(el) {
+  const [r, acc] = await Promise.all([api.rulesStatus(), api.listRuleAcceptances()]);
+  el.innerHTML = `<div class="card"><h3>BOX noteikumi — versija ${r.version}</h3>
+    <p class="muted small">Katram dalībniekam noteikumi jāapstiprina, pirms aplikācija sāk darboties. Ja publicē jaunu versiju, visiem (arī tev) tā jāapstiprina no jauna. Raksti katru punktu savā rindā.</p>
+    <form id="f"><textarea name="body" rows="18" required>${esc(r.body)}</textarea>
+    <div class="sp"></div><button class="btn primary block">Publicēt kā versiju ${r.version + 1}</button></form></div>
+    <div class="card"><h3>Kas ir apstiprinājis versiju ${r.version}</h3><ul class="list">${acc.map(a => `<li class="row"><div class="grow"><b>${esc(a.full_name)}</b></div>
+      ${a.accepted_at ? `<span class="badge green">${fDT(a.accepted_at)}</span>` : '<span class="badge red">nav apstiprinājis</span>'}</li>`).join('')}</ul></div>`;
+  el.querySelector('#f').onsubmit = async e => {
+    e.preventDefault(); const body = e.target.body.value.trim();
+    if (body === r.body.trim()) return toast('Teksts nav mainīts', true);
+    if (!(await confirmBox(`Publicēt noteikumu versiju ${r.version + 1}? Visiem dalībniekiem tā būs jāapstiprina no jauna.`, 'Publicēt'))) return;
+    await run(() => api.publishRules(body), 'Jaunā versija publicēta'); boot();
+  };
+}
+
 async function adDevices(el) {
   const list = await api.listDevices();
   const kindLv = { shelly_lift: '⚡ Shelly relejs — pacēlājs', shelly_door: '🔒 Shelly relejs — durvis', camera: '📹 AI kamera' };
@@ -718,6 +862,7 @@ async function route() {
   const { parts, q } = parseHash();
   if (!state.session) return viewLogin(q);
   if (!state.session.profile.active) return viewPending();
+  if (!state.rules?.accepted) return viewRules();
   try {
     switch (parts[0]) {
       case undefined: return await viewHome(q);
@@ -739,7 +884,11 @@ async function route() {
 async function boot() {
   try {
     state.session = await api.getSession();
-    if (state.session?.profile?.active) state.settings = await api.getSettings();
+    state.rules = null;
+    if (state.session?.profile?.active) {
+      state.rules = (await api.rulesStatus()) || { accepted: true };
+      if (state.rules.accepted) state.settings = await api.getSettings();
+    }
   } catch (e) { console.error(e); state.session = null; }
   route();
 }

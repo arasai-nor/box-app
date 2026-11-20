@@ -1,7 +1,8 @@
 // DEMO datu slānis — tie paši noteikumi kā Supabase datubāzē, bet dati glabājas šajā pārlūkā (localStorage).
 // Paredzēts aplikācijas izmēģināšanai, pirms pieslēgta īstā datubāze.
 
-const KEY = 'box_demo_v2';
+const KEY = 'box_demo_v3';
+const RULES_V1 = "1. BOX lieto tikai ar rezervāciju aplikācijā. Ja BOX ir brīvs, var iečekoties arī bez rezervācijas.\n2. Sākot darbu, iečekojies ar QR kodu BOX iekšpusē. Beidzot darbu, izčekojies. To var izdarīt tikai uz vietas.\n3. Maksa ir 2 € stundā par laiku no iečekošanās līdz izčekošanās. Mazākā maksa ir par 1 stundu.\n4. Izčekojies tikai tad, kad auto ir izbraukts un BOX ir sakopts.\n5. Ja aizbrauc neizčekojies, laiks turpina skaitīties. Atgriezies un izčekojies vai uzreiz sazinies ar adminu.\n6. Ja atrodi BOX aizņemtu ar cita auto, nospied \"BOX nav atbrīvots\". Iepriekšējam lietotājam laiks tiks skaitīts tālāk.\n7. Ja BOX vajag ilgāk nekā parasti (avārija, sarežģīts remonts), sarunā to ar adminu. Admins uzliek HOLD, un to redz visi.\n8. Katra mēneša 1. datumā tiek saskaitīts, cik katrs ir lietojis. Norēķinās ar darbu BOX labā vai skaidrā naudā, vienojoties ar adminu.\n9. Nauda tiek tērēta tikai BOX uzturēšanai un instrumentiem. Kasi redz visi.\n10. Pacēlāju lieto tikai tas, kurš prot ar to droši strādāt. Par savu drošību un nodarītiem bojājumiem atbild pats lietotājs.\n11. BOX kodu nedod citiem. BOX lieto tikai grupas dalībnieki.\n12. Strīdus izšķir admins. Par noteikumu pārkāpšanu admins var slēgt piekļuvi.";
 const MIN = 60000;
 
 function uuid() { return (crypto.randomUUID ? crypto.randomUUID() : 'id-' + Math.random().toString(36).slice(2)); }
@@ -39,7 +40,7 @@ function seed() {
   ];
   return {
     settings: { id: 1, hourly_rate: 2, min_minutes: 60, checkin_early_minutes: 15, walkin_minutes: 60, checkin_code: 'DEMO42', noshow_enabled: false, noshow_minutes: 30,
-      geo_enabled: true, box_lat: 56.99029, box_lng: 24.18677, geo_radius_m: 250 },
+      geo_enabled: true, box_lat: 56.990484, box_lng: 24.185431, geo_radius_m: 250 },
     profiles, invites: [], bookings, sessions, ledger: [], cash: [
       { id: 1, entry_date: at(-10, 0).slice(0, 10), direction: 'out', category: 'instrumenti', amount: 39.9, description: 'Dinamometriskā atslēga (piemērs)' },
     ],
@@ -49,7 +50,8 @@ function seed() {
       { id: 3, kind: 'camera', name: 'Kamera 2', location: 'BOX labā puse', enabled: false },
     ],
     reports: [],
-    seq: { booking: bid, session: sid, ledger: 1, cash: 2, report: 1 },
+    rules: [{ version: 1, body: RULES_V1, published_at: iso(Date.now()) }], acceptances: [], holds: [],
+    seq: { booking: bid, session: sid, ledger: 1, cash: 2, report: 1, hold: 1 },
     currentUser: null,
   };
 }
@@ -65,6 +67,13 @@ export function createDemoApi() {
   const overlaps = (s, e, exceptId) => db.bookings.some(b => live(b) && b.id !== exceptId &&
     new Date(b.starts_at) < new Date(e) && new Date(b.ends_at) > new Date(s));
   const name = id => db.profiles.find(p => p.id === id)?.full_name || '?';
+  const curRules = () => db.rules[db.rules.length - 1];
+  const accepted = id => db.acceptances.find(a => a.user_id === id && a.version === curRules().version);
+  const okUser = () => !!(me()?.active && accepted(me().id));
+  const NOT_OK = 'Konts nav aktivizēts vai nav apstiprināti BOX noteikumi';
+  const openHold = () => db.holds.find(h => !h.ended_at);
+  const cancelForHold = end => db.bookings.filter(b => b.status === 'active' && new Date(b.starts_at) < new Date(end) && new Date(b.ends_at) > Date.now())
+    .forEach(b => { b.status = 'cancelled'; b.note = ((b.note || '') + ' (atcelts: HOLD)').trim(); });
   const geoCheck = pos => {
     const st = db.settings;
     if (!st.geo_enabled) return;
@@ -98,14 +107,16 @@ export function createDemoApi() {
     async updateSettings(patch) { need(isAdmin(), 'Nav tiesību'); Object.assign(db.settings, patch); save(); },
 
     async listBookings(fromIso, toIso) {
-      need(me()?.active, 'Konts nav aktivizēts');
+      need(okUser(), NOT_OK);
       return db.bookings.filter(b => live(b) && new Date(b.starts_at) < new Date(toIso) && new Date(b.ends_at) > new Date(fromIso))
         .sort((a, b) => a.starts_at.localeCompare(b.starts_at)).map(b => ({ ...b, full_name: name(b.user_id) }));
     },
     async createBooking(s, e, note) {
-      need(me()?.active, 'Konts nav aktivizēts');
+      need(okUser(), NOT_OK);
       need(new Date(e) > new Date(s), 'Beigu laikam jābūt pēc sākuma');
       need(new Date(s) > Date.now() - 10 * MIN, 'Nevar rezervēt pagātnē');
+      need(!db.holds.some(h => !h.ended_at && new Date(s) < Math.max(new Date(h.expected_end), Date.now()) && new Date(e) > new Date(h.starts_at)),
+        'Šajā laikā BOX ir uz HOLD — rezervē laiku pēc tā');
       need(!overlaps(s, e), 'Šis laiks jau ir aizņemts');
       const b = { id: db.seq.booking++, user_id: me().id, starts_at: iso(s), ends_at: iso(e), status: 'active', note: note || '' };
       db.bookings.push(b); save(); return b;
@@ -126,9 +137,10 @@ export function createDemoApi() {
     },
     async checkIn(c, pos = null) {
       const st = db.settings, now = Date.now();
-      need(me()?.active, 'Konts nav aktivizēts');
+      need(okUser(), NOT_OK);
       need((c || '').trim().toUpperCase() === st.checkin_code, 'Nepareizs BOX kods');
       geoCheck(pos);
+      need(!openHold(), 'BOX ir uz HOLD — iečekoties nevar');
       need(!db.sessions.some(s => !s.checked_out_at), 'BOX šobrīd jau ir aizņemts');
       let b = db.bookings.filter(x => x.user_id === me().id && x.status === 'active' &&
         now >= new Date(x.starts_at) - st.checkin_early_minutes * MIN && now < new Date(x.ends_at))
@@ -160,8 +172,9 @@ export function createDemoApi() {
       save(); return { ...s };
     },
     async reportNotVacated(pos = null, note = null) {
-      need(me()?.active, 'Konts nav aktivizēts');
+      need(okUser(), NOT_OK);
       geoCheck(pos);
+      need(!openHold(), 'BOX ir uz HOLD — ziņot nav vajadzības');
       need(!db.sessions.some(s => !s.checked_out_at), 'BOX šobrīd ir iečekots — ziņot nav vajadzības');
       const s = [...db.sessions].sort((a, b) => b.checked_out_at.localeCompare(a.checked_out_at))[0];
       need(s, 'Nav neviena iepriekšējā lietotāja');
@@ -234,6 +247,72 @@ export function createDemoApi() {
       }
       save(); return n;
     },
+    // ---------- noteikumi ----------
+    async rulesStatus() {
+      const r = curRules(), a = me() && accepted(me().id);
+      return { version: r.version, body: r.body, published_at: r.published_at, accepted: !!a, accepted_at: a?.accepted_at || null };
+    },
+    async acceptRules(version) {
+      need(me()?.active, 'Konts nav aktivizēts');
+      need(version === curRules().version, 'Noteikumi ir mainīti — atver aplikāciju no jauna');
+      if (!accepted(me().id)) db.acceptances.push({ user_id: me().id, version, accepted_at: iso(Date.now()) });
+      save();
+    },
+    async publishRules(body) {
+      need(isAdmin(), 'Nav tiesību'); need((body || '').trim().length >= 20, 'Noteikumu teksts ir par īsu');
+      const v = curRules().version + 1;
+      db.rules.push({ version: v, body: body.trim(), published_at: iso(Date.now()), published_by: me().id }); save(); return v;
+    },
+    async listRuleAcceptances() {
+      need(isAdmin(), 'Nav tiesību');
+      return db.profiles.filter(p => p.active).map(p => ({ user_id: p.id, full_name: p.full_name, accepted_at: accepted(p.id)?.accepted_at || null }))
+        .sort((a, b) => a.full_name.localeCompare(b.full_name));
+    },
+
+    // ---------- HOLD ----------
+    async boxHold() {
+      const h = openHold(); if (!h) return null;
+      const p = db.profiles.find(x => x.id === h.user_id);
+      return { id: h.id, user_id: h.user_id, full_name: p?.full_name, phone: p?.phone, starts_at: h.starts_at, expected_end: h.expected_end, reason: h.reason };
+    },
+    async listHolds() {
+      return [...db.holds].reverse().map(h => { const p = db.profiles.find(x => x.id === h.user_id); return { ...h, full_name: p?.full_name || '?', phone: p?.phone || '' }; });
+    },
+    async startHold(userId, expectedEndIso, reason) {
+      need(isAdmin(), 'Nav tiesību'); const now = Date.now(), st = db.settings;
+      need(new Date(expectedEndIso) > now, 'Beigu laikam jābūt nākotnē');
+      need(db.profiles.some(p => p.id === userId && p.active), 'Lietotājs nav atrasts');
+      need(!openHold(), 'HOLD jau ir aktīvs — vispirms beidz esošo');
+      const s = db.sessions.find(x => !x.checked_out_at);
+      if (s) {
+        need(s.user_id === userId, 'BOX šobrīd lieto cits lietotājs — vispirms izčeko viņu');
+        const m = Math.max(1, Math.ceil((now - new Date(s.checked_in_at)) / MIN)), bill = Math.max(m, st.min_minutes);
+        Object.assign(s, { checked_out_at: iso(now), minutes: m, billed_minutes: bill, amount: round2(bill / 60 * st.hourly_rate), closed_by: me().id, note: 'Noslēgts, uzliekot HOLD' });
+        const b = db.bookings.find(x => x.id === s.booking_id);
+        if (b) { b.status = 'completed'; if (new Date(b.ends_at) > now) b.ends_at = iso(Math.max(now, new Date(b.starts_at).getTime() + 1000)); }
+        db.reports.filter(x => x.session_id === s.id && x.status === 'open').forEach(x => { x.status = 'resolved'; x.resolved_at = iso(now); });
+      }
+      cancelForHold(expectedEndIso);
+      const h = { id: db.seq.hold++, user_id: userId, starts_at: iso(now), expected_end: iso(expectedEndIso), ended_at: null,
+        reason: (reason || '').trim() || null, amount: null, created_by: me().id };
+      db.holds.push(h); save(); return { ...h };
+    },
+    async updateHold(id, expectedEndIso, reason) {
+      need(isAdmin(), 'Nav tiesību'); need(new Date(expectedEndIso) > Date.now(), 'Beigu laikam jābūt nākotnē');
+      const h = db.holds.find(x => x.id === id && !x.ended_at); need(h, 'HOLD nav atrasts vai jau ir beidzies');
+      h.expected_end = iso(expectedEndIso); if ((reason || '').trim()) h.reason = reason.trim();
+      cancelForHold(expectedEndIso); save(); return { ...h };
+    },
+    async endHold(id, amount, note) {
+      need(isAdmin(), 'Nav tiesību'); need(!(amount < 0), 'Summa nevar būt negatīva');
+      const h = db.holds.find(x => x.id === id && !x.ended_at); need(h, 'HOLD nav atrasts vai jau ir beidzies');
+      const now = new Date(), d = x => { x = new Date(x); return String(x.getDate()).padStart(2, '0') + '.' + String(x.getMonth() + 1).padStart(2, '0') + '.'; };
+      Object.assign(h, { ended_at: iso(now), ended_by: me().id, amount: amount || 0 });
+      if (amount > 0) db.ledger.push({ id: db.seq.ledger++, user_id: h.user_id, kind: 'hold', hours: null, amount: round2(amount),
+        description: `HOLD ${d(h.starts_at)}–${d(now)}${now.getFullYear()}` + ((note || '').trim() ? ': ' + note.trim() : h.reason ? ': ' + h.reason : ''), created_at: iso(now) });
+      save(); return { ...h };
+    },
+
     async listDevices() { return db.devices; },
   };
 }

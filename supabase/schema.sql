@@ -19,8 +19,8 @@ create table if not exists public.settings (
   noshow_enabled        boolean not null default false,       -- 2. posms
   noshow_minutes        int not null default 30,              -- 2. posms
   geo_enabled           boolean not null default true,        -- atrašanās vietas pārbaude
-  box_lat               double precision not null default 56.99029,  -- Viskaļu iela 22, Rīga
-  box_lng               double precision not null default 24.18677,
+  box_lat               double precision not null default 56.990484, -- BOX, Viskaļu iela 22, Rīga
+  box_lng               double precision not null default 24.185431,
   geo_radius_m          int not null default 250,             -- atļautais attālums no BOX (m)
   updated_at            timestamptz not null default now()
 );
@@ -106,7 +106,7 @@ create table if not exists public.reports (
 create table if not exists public.ledger (
   id          bigserial primary key,
   user_id     uuid not null references public.profiles(id),
-  kind        text not null check (kind in ('usage','work','cash','adjustment')),
+  kind        text not null check (kind in ('usage','work','cash','adjustment','hold')),
   period      date,                          -- mēneša 1. datums (lietošanai)
   hours       numeric(8,2),
   amount      numeric(8,2) not null,
@@ -129,6 +129,53 @@ create table if not exists public.cash_entries (
   created_by  uuid references public.profiles(id),
   created_at  timestamptz not null default now()
 );
+
+-- ---------------------------------------------------------------------
+-- 6a. BOX noteikumi: versijas un apstiprinājumi (kurš, kuru versiju, kad)
+-- ---------------------------------------------------------------------
+create table if not exists public.rules_versions (
+  version      int primary key,
+  body         text not null,
+  published_at timestamptz not null default now(),
+  published_by uuid references public.profiles(id)
+);
+create table if not exists public.rule_acceptances (
+  user_id     uuid not null references public.profiles(id) on delete cascade,
+  version     int not null references public.rules_versions(version),
+  accepted_at timestamptz not null default now(),
+  primary key (user_id, version)
+);
+insert into public.rules_versions (version, body) values (1, $rules$1. BOX lieto tikai ar rezervāciju aplikācijā. Ja BOX ir brīvs, var iečekoties arī bez rezervācijas.
+2. Sākot darbu, iečekojies ar QR kodu BOX iekšpusē. Beidzot darbu, izčekojies. To var izdarīt tikai uz vietas.
+3. Maksa ir 2 € stundā par laiku no iečekošanās līdz izčekošanās. Mazākā maksa ir par 1 stundu.
+4. Izčekojies tikai tad, kad auto ir izbraukts un BOX ir sakopts.
+5. Ja aizbrauc neizčekojies, laiks turpina skaitīties. Atgriezies un izčekojies vai uzreiz sazinies ar adminu.
+6. Ja atrodi BOX aizņemtu ar cita auto, nospied "BOX nav atbrīvots". Iepriekšējam lietotājam laiks tiks skaitīts tālāk.
+7. Ja BOX vajag ilgāk nekā parasti (avārija, sarežģīts remonts), sarunā to ar adminu. Admins uzliek HOLD, un to redz visi.
+8. Katra mēneša 1. datumā tiek saskaitīts, cik katrs ir lietojis. Norēķinās ar darbu BOX labā vai skaidrā naudā, vienojoties ar adminu.
+9. Nauda tiek tērēta tikai BOX uzturēšanai un instrumentiem. Kasi redz visi.
+10. Pacēlāju lieto tikai tas, kurš prot ar to droši strādāt. Par savu drošību un nodarītiem bojājumiem atbild pats lietotājs.
+11. BOX kodu nedod citiem. BOX lieto tikai grupas dalībnieki.
+12. Strīdus izšķir admins. Par noteikumu pārkāpšanu admins var slēgt piekļuvi.$rules$)
+on conflict do nothing;
+
+-- ---------------------------------------------------------------------
+-- 6b. HOLD: admins aptur BOX konkrētam lietotājam (avārija, ilgs remonts). Vienlaikus tikai viens.
+-- ---------------------------------------------------------------------
+create table if not exists public.holds (
+  id           bigserial primary key,
+  user_id      uuid not null references public.profiles(id),
+  starts_at    timestamptz not null default now(),
+  expected_end timestamptz not null,          -- aptuvenais beigu laiks (vienošanās ar adminu)
+  ended_at     timestamptz,
+  reason       text,
+  amount       numeric(8,2),                  -- summa, par ko vienojās; admins ieraksta, beidzot HOLD
+  created_by   uuid references public.profiles(id),
+  ended_by     uuid references public.profiles(id),
+  created_at   timestamptz not null default now(),
+  check (expected_end > starts_at)
+);
+create unique index if not exists holds_one_open on public.holds ((true)) where ended_at is null;
 
 -- ---------------------------------------------------------------------
 -- 7. Iekārtas — REZERVĒTS 2./3. posmam (Shelly relejs, kameras). Tagad neaktīvas.
@@ -165,7 +212,54 @@ $$;
 
 create or replace function public.is_active() returns boolean
 language sql stable security definer set search_path = public as $$
-  select exists (select 1 from profiles where id = auth.uid() and active);
+  select exists (select 1 from profiles p where p.id = auth.uid() and p.active)
+     and exists (select 1 from rule_acceptances a where a.user_id = auth.uid()
+                  and a.version = (select max(version) from rules_versions));
+$$;
+
+-- Noteikumi: jaunākā versija + vai es to esmu apstiprinājis
+create or replace function public.current_rules()
+returns table (version int, body text, published_at timestamptz, accepted boolean, accepted_at timestamptz)
+language sql stable security definer set search_path = public as $$
+  select r.version, r.body, r.published_at, a.user_id is not null, a.accepted_at
+    from rules_versions r
+    left join rule_acceptances a on a.version = r.version and a.user_id = auth.uid()
+   where auth.uid() is not null
+   order by r.version desc limit 1;
+$$;
+
+create or replace function public.accept_rules(p_version int) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if not exists (select 1 from profiles where id = auth.uid() and active) then
+    raise exception 'Konts nav aktivizēts';
+  end if;
+  if p_version is distinct from (select max(version) from rules_versions) then
+    raise exception 'Noteikumi ir mainīti — atver aplikāciju no jauna';
+  end if;
+  insert into rule_acceptances (user_id, version) values (auth.uid(), p_version) on conflict do nothing;
+end $$;
+
+-- Admins publicē jaunu noteikumu versiju: visiem (arī adminam) tā jāapstiprina no jauna
+create or replace function public.publish_rules(p_body text) returns int
+language plpgsql security definer set search_path = public as $$
+declare v int;
+begin
+  if not is_admin() then raise exception 'Nav tiesību'; end if;
+  if length(trim(coalesce(p_body, ''))) < 20 then raise exception 'Noteikumu teksts ir par īsu'; end if;
+  select coalesce(max(version), 0) + 1 into v from rules_versions;
+  insert into rules_versions (version, body, published_by) values (v, trim(p_body), auth.uid());
+  return v;
+end $$;
+
+create or replace function public.list_rule_acceptances()
+returns table (user_id uuid, full_name text, accepted_at timestamptz)
+language sql stable security definer set search_path = public as $$
+  select p.id, p.full_name, a.accepted_at
+    from profiles p
+    left join rule_acceptances a on a.user_id = p.id and a.version = (select max(version) from rules_versions)
+   where is_admin() and p.active
+   order by p.full_name;
 $$;
 
 -- Atrašanās vietas pārbaude: attālums līdz BOX (haversine). Precizitātes pielaide līdz 100 m.
@@ -227,9 +321,13 @@ create or replace function public.create_booking(p_starts timestamptz, p_ends ti
 returns bookings language plpgsql security definer set search_path = public as $$
 declare b bookings;
 begin
-  if not is_active() then raise exception 'Konts nav aktivizēts'; end if;
+  if not is_active() then raise exception 'Konts nav aktivizēts vai nav apstiprināti BOX noteikumi'; end if;
   if p_ends <= p_starts then raise exception 'Beigu laikam jābūt pēc sākuma'; end if;
   if p_starts < now() - interval '10 minutes' then raise exception 'Nevar rezervēt pagātnē'; end if;
+  if exists (select 1 from holds where ended_at is null
+              and p_starts < greatest(expected_end, now()) and p_ends > starts_at) then
+    raise exception 'Šajā laikā BOX ir uz HOLD — rezervē laiku pēc tā';
+  end if;
   begin
     insert into bookings (user_id, starts_at, ends_at, note)
     values (auth.uid(), p_starts, p_ends, p_note) returning * into b;
@@ -259,10 +357,13 @@ create or replace function public.check_in(p_code text, p_lat double precision d
 language plpgsql security definer set search_path = public as $$
 declare s settings; b bookings; ses sessions;
 begin
-  if not is_active() then raise exception 'Konts nav aktivizēts'; end if;
+  if not is_active() then raise exception 'Konts nav aktivizēts vai nav apstiprināti BOX noteikumi'; end if;
   select * into s from settings where id = 1;
   if upper(trim(p_code)) <> s.checkin_code then raise exception 'Nepareizs BOX kods'; end if;
   perform geo_check(p_lat, p_lng, p_acc);
+  if exists (select 1 from holds where ended_at is null) then
+    raise exception 'BOX ir uz HOLD — iečekoties nevar';
+  end if;
   if exists (select 1 from sessions where checked_out_at is null) then
     raise exception 'BOX šobrīd jau ir aizņemts';
   end if;
@@ -356,8 +457,11 @@ create or replace function public.report_not_vacated(p_lat double precision defa
 language plpgsql security definer set search_path = public as $$
 declare ses sessions; p profiles;
 begin
-  if not is_active() then raise exception 'Konts nav aktivizēts'; end if;
+  if not is_active() then raise exception 'Konts nav aktivizēts vai nav apstiprināti BOX noteikumi'; end if;
   perform geo_check(p_lat, p_lng, p_acc);
+  if exists (select 1 from holds where ended_at is null) then
+    raise exception 'BOX ir uz HOLD — ziņot nav vajadzības';
+  end if;
   if exists (select 1 from sessions where checked_out_at is null) then
     raise exception 'BOX šobrīd ir iečekots — ziņot nav vajadzības';
   end if;
@@ -411,6 +515,86 @@ language sql stable security definer set search_path = public as $$
     join profiles rp on rp.id = r.reporter_id join profiles up on up.id = se.user_id
    where is_admin() order by r.created_at desc limit 200;
 $$;
+
+-- HOLD: redz visi aktīvie lietotāji
+create or replace function public.box_hold()
+returns table (id bigint, user_id uuid, full_name text, phone text, starts_at timestamptz, expected_end timestamptz, reason text)
+language sql stable security definer set search_path = public as $$
+  select h.id, h.user_id, p.full_name, p.phone, h.starts_at, h.expected_end, h.reason
+    from holds h join profiles p on p.id = h.user_id
+   where h.ended_at is null and is_active();
+$$;
+
+-- Admins uzliek HOLD. Ja lietotājs pats ir iečekots, viņa sesija tiek noslēgta (parastā maksa līdz šim brīdim).
+-- Citu lietotāju rezervācijas HOLD laikā tiek atceltas.
+create or replace function public.start_hold(p_user uuid, p_expected_end timestamptz, p_reason text default null)
+returns holds language plpgsql security definer set search_path = public as $$
+declare ses sessions; s settings; h holds; v_min int; v_bill int;
+begin
+  if not is_admin() then raise exception 'Nav tiesību'; end if;
+  if p_expected_end <= now() then raise exception 'Beigu laikam jābūt nākotnē'; end if;
+  if not exists (select 1 from profiles where id = p_user and active) then raise exception 'Lietotājs nav atrasts'; end if;
+  if exists (select 1 from holds where ended_at is null) then
+    raise exception 'HOLD jau ir aktīvs — vispirms beidz esošo';
+  end if;
+  select * into s from settings where id = 1;
+  select * into ses from sessions where checked_out_at is null;
+  if found then
+    if ses.user_id <> p_user then
+      raise exception 'BOX šobrīd lieto cits lietotājs — vispirms izčeko viņu';
+    end if;
+    v_min  := greatest(1, ceil(extract(epoch from (now() - ses.checked_in_at)) / 60.0)::int);
+    v_bill := greatest(v_min, s.min_minutes);
+    update sessions set checked_out_at = now(), minutes = v_min, billed_minutes = v_bill,
+           amount = round(v_bill / 60.0 * s.hourly_rate, 2), closed_by = auth.uid(), note = 'Noslēgts, uzliekot HOLD'
+     where id = ses.id;
+    update bookings set status = 'completed',
+           ends_at = case when ends_at > now() then greatest(now(), starts_at + interval '1 second') else ends_at end
+     where id = ses.booking_id;
+    update reports set status = 'resolved', resolved_at = now() where session_id = ses.id and status = 'open';
+  end if;
+  update bookings set status = 'cancelled', note = trim(coalesce(note, '') || ' (atcelts: HOLD)')
+   where status = 'active' and starts_at < p_expected_end and ends_at > now();
+  insert into holds (user_id, expected_end, reason, created_by)
+  values (p_user, p_expected_end, nullif(trim(coalesce(p_reason, '')), ''), auth.uid()) returning * into h;
+  return h;
+end $$;
+
+-- Admins maina HOLD aptuveno beigu laiku vai iemeslu
+create or replace function public.update_hold(p_id bigint, p_expected_end timestamptz, p_reason text default null)
+returns holds language plpgsql security definer set search_path = public as $$
+declare h holds;
+begin
+  if not is_admin() then raise exception 'Nav tiesību'; end if;
+  if p_expected_end <= now() then raise exception 'Beigu laikam jābūt nākotnē'; end if;
+  update holds set expected_end = p_expected_end, reason = coalesce(nullif(trim(coalesce(p_reason, '')), ''), reason)
+   where id = p_id and ended_at is null returning * into h;
+  if not found then raise exception 'HOLD nav atrasts vai jau ir beidzies'; end if;
+  update bookings set status = 'cancelled', note = trim(coalesce(note, '') || ' (atcelts: HOLD)')
+   where status = 'active' and starts_at < p_expected_end and ends_at > now();
+  return h;
+end $$;
+
+-- Admins beidz HOLD un ieraksta summu, par ko vienojās (0 = bez maksas). Summa nonāk lietotāja kontā.
+create or replace function public.end_hold(p_id bigint, p_amount numeric default 0, p_note text default null)
+returns holds language plpgsql security definer set search_path = public as $$
+declare h holds;
+begin
+  if not is_admin() then raise exception 'Nav tiesību'; end if;
+  if coalesce(p_amount, 0) < 0 then raise exception 'Summa nevar būt negatīva'; end if;
+  update holds set ended_at = now(), ended_by = auth.uid(), amount = coalesce(p_amount, 0)
+   where id = p_id and ended_at is null returning * into h;
+  if not found then raise exception 'HOLD nav atrasts vai jau ir beidzies'; end if;
+  if coalesce(p_amount, 0) > 0 then
+    insert into ledger (user_id, kind, amount, description, created_by)
+    values (h.user_id, 'hold', p_amount,
+            'HOLD ' || to_char(h.starts_at at time zone 'Europe/Riga', 'DD.MM.') || '–' ||
+            to_char(now() at time zone 'Europe/Riga', 'DD.MM.YYYY') ||
+            coalesce(': ' || nullif(trim(coalesce(p_note, '')), ''), ': ' || h.reason, ''),
+            auth.uid());
+  end if;
+  return h;
+end $$;
 
 -- Mēneša slēgšana: sesijas → virtuālais konts (vienreiz uz mēnesi)
 create or replace function public.close_month(p_month date) returns int
@@ -469,6 +653,9 @@ alter table public.invites       enable row level security;
 alter table public.bookings      enable row level security;
 alter table public.sessions      enable row level security;
 alter table public.reports       enable row level security;
+alter table public.rules_versions   enable row level security;
+alter table public.rule_acceptances enable row level security;
+alter table public.holds            enable row level security;
 alter table public.ledger        enable row level security;
 alter table public.cash_entries  enable row level security;
 alter table public.devices       enable row level security;
@@ -478,7 +665,7 @@ alter table public.device_events enable row level security;
 create policy settings_admin_all on public.settings for all using (is_admin()) with check (is_admin());
 create or replace view public.public_settings with (security_invoker = false) as
   select hourly_rate, min_minutes, checkin_early_minutes, walkin_minutes, noshow_enabled, noshow_minutes,
-         geo_enabled, geo_radius_m from settings;
+         geo_enabled, geo_radius_m, box_lat, box_lng from settings;
 grant select on public.public_settings to authenticated;
 
 -- profiles: savu redz vienmēr; aktīvie redz citu vārdus; savu var labot (bez role/active)
@@ -497,6 +684,16 @@ create policy bookings_admin on public.bookings for all using (is_admin()) with 
 -- sessions: savas + admins
 create policy sessions_select on public.sessions for select using (user_id = auth.uid() or is_admin());
 create policy sessions_admin on public.sessions for all using (is_admin()) with check (is_admin());
+
+-- noteikumi: tekstu lasa katrs ielogojies lietotājs; apstiprinājumus redz pats lietotājs un admins
+create policy rules_select on public.rules_versions for select using (auth.uid() is not null);
+create policy rules_admin on public.rules_versions for all using (is_admin()) with check (is_admin());
+create policy acceptances_select on public.rule_acceptances for select using (user_id = auth.uid() or is_admin());
+create policy acceptances_admin on public.rule_acceptances for all using (is_admin()) with check (is_admin());
+
+-- HOLD: redz visi aktīvie; maina tikai admins (caur RPC)
+create policy holds_select on public.holds for select using (is_active());
+create policy holds_admin on public.holds for all using (is_admin()) with check (is_admin());
 
 -- reports: ziņotājs + admins (pārējais caur RPC)
 create policy reports_select on public.reports for select using (reporter_id = auth.uid() or is_admin());

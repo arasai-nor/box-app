@@ -76,6 +76,31 @@ export function createSupabaseApi(cfg) {
     async listReports() { return ok(await sb.rpc('list_reports')); },
     async rejectReport(id) { ok(await sb.rpc('reject_report', { p_id: id })); },
 
+    // ---------- noteikumi ----------
+    async rulesStatus() { const rows = ok(await sb.rpc('current_rules')); return rows?.[0] || null; },
+    async acceptRules(version) { ok(await sb.rpc('accept_rules', { p_version: version })); },
+    async publishRules(body) { return ok(await sb.rpc('publish_rules', { p_body: body })); },
+    async listRuleAcceptances() { return ok(await sb.rpc('list_rule_acceptances')); },
+
+    // ---------- HOLD ----------
+    async boxHold() { const rows = ok(await sb.rpc('box_hold')); return rows?.[0] || null; },
+    async listHolds() {
+      const [holds, profs] = await Promise.all([
+        sb.from('holds').select('*').order('starts_at', { ascending: false }).limit(100),
+        sb.from('profiles').select('id,full_name,phone')]);
+      const by = Object.fromEntries(ok(profs).map(p => [p.id, p]));
+      return ok(holds).map(h => ({ ...h, full_name: by[h.user_id]?.full_name || '?', phone: by[h.user_id]?.phone || '' }));
+    },
+    async startHold(userId, expectedEndIso, reason) {
+      return ok(await sb.rpc('start_hold', { p_user: userId, p_expected_end: expectedEndIso, p_reason: reason || null }));
+    },
+    async updateHold(id, expectedEndIso, reason) {
+      return ok(await sb.rpc('update_hold', { p_id: id, p_expected_end: expectedEndIso, p_reason: reason || null }));
+    },
+    async endHold(id, amount, note) {
+      return ok(await sb.rpc('end_hold', { p_id: id, p_amount: amount || 0, p_note: note || null }));
+    },
+
     // ---------- mans konts ----------
     async mySessions() {
       const id = await uid();

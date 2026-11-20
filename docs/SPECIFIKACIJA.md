@@ -1,4 +1,4 @@
-# BOX aplikācija — funkcionālā specifikācija (v1.1, 21.11.2026)
+# BOX aplikācija — funkcionālā specifikācija (v1.2, 21.11.2026)
 
 **Admins:** Aras Noreika · **Kods:** GitHub `arasai-nor/box-app`
 
@@ -12,7 +12,9 @@
 | 3 | Norēķini | Bez bankām. Summas krājas virtuāli. Admins reģistrē nosegšanu ar darbu BOX labā vai skaidru naudu (tā nonāk BOX kasē) |
 | 4 | Platforma | PWA: viens kods iPhone un Android, saite caur WhatsApp |
 | 5 | Shelly relejs, kameras | Vietas rezervētas, pagaidām neaktīvas |
-| 6 | Atrašanās vietas pārbaude | Iečekoties, izčekoties un ziņot var tikai 250 m rādiusā no BOX (Viskaļu iela 22, Rīga). Rādiusu un punktu maina admins |
+| 6 | Atrašanās vietas pārbaude | Iečekoties, izčekoties un ziņot var tikai 250 m rādiusā no BOX (Viskaļu iela 22, Rīga; punkts 56.990484, 24.185431). Rādiusu un punktu maina admins |
+| 8 | Noteikumi | Aplikācija darbojas tikai pēc tam, kad dalībnieks izlasījis un apstiprinājis īsos BOX noteikumus. Glabājas, kurš kuru versiju un kad apstiprinājis. Jauna versija = visiem jāapstiprina no jauna |
+| 9 | HOLD | Avārijas vai ilga remonta gadījumā admins aptur BOX konkrētam dalībniekam. To redz visi. Stundu skaitītājs HOLD laikā neskaita; summu, par ko vienojas, admins ieraksta, beidzot HOLD |
 | 7 | Neatbrīvots BOX | Nākamais lietotājs var ziņot "BOX nav atbrīvots"; iepriekšējam laiks atkal skaitās no viņa iečekošanās |
 
 ## 2. Noteikumi (ieprogrammēti datubāzē)
@@ -30,6 +32,9 @@
 9. **Atrašanās vieta:** iečekojoties, izčekojoties un ziņojot aplikācija pārbauda telefona atrašanās vietu (rādiuss 250 m, GPS neprecizitātes pielaide līdz 100 m). Adminam, izčekojot citu lietotāju, pārbaude netiek piemērota. Pārbaudi var izslēgt admina iestatījumos.
 10. **"BOX nav atbrīvots":** ja BOX nav iečekots, bet tajā stāv iepriekšējā lietotāja auto, jebkurš cits lietotājs uz vietas var to ziņot. Pēdējā lietotāja sesija tiek atvērta no jauna, un laiks skaitās no viņa sākotnējās iečekošanās, līdz viņš izčekojas uz vietas. Ziņot nevar, ja kopš izčekošanās pagājušas vairāk nekā 14 dienas vai mēnesis jau slēgts. Kļūdainu ziņojumu admins noraida, un tiek atjaunots sākotnējais laiks un summa.
 11. **Mēneša piederība:** lietošanas reize tiek ieskaitīta tajā mēnesī, kurā notikusi izčekošanās.
+12. **Noteikumu apstiprināšana:** kamēr dalībnieks nav apstiprinājis jaunāko noteikumu versiju, viņš redz tikai noteikumu ekrānu, un datubāze neļauj rezervēt, iečekoties vai skatīt kalendāru. Noteikumu tekstu admins maina sadaļā Admins → Noteikumi.
+13. **HOLD:** vienlaikus var būt tikai viens. Uzliekot HOLD, citu dalībnieku rezervācijas šajā laikā tiek atceltas; ja dalībnieks pats ir iečekots, viņa sesija tiek noslēgta ar parasto maksu. HOLD laikā nevar rezervēt, iečekoties un ziņot. HOLD redzams sākuma ekrānā un kalendārā ar dalībnieka vārdu, iemeslu, aptuveno beigu laiku un saziņas pogām. Beidzot HOLD, admins ieraksta summu (var būt 0), kas nonāk dalībnieka kontā.
+14. **Brīdinājums par aizbraukšanu:** ja dalībnieks ir iečekots un aplikācija ir atvērta, bet telefons vairs nav BOX zonā, parādās sarkans brīdinājums ar vibrāciju un saziņu ar adminu. Kad aplikācija ir aizvērta, tīmekļa aplikācija atrašanās vietu izsekot nevar; šim gadījumam 2. posmā būs servera push atgādinājumi (pēc rezervācijas beigām un ik pēc noteikta laika, kamēr sesija ir atvērta).
 
 ## 3. Drošība
 Lietotājs redz tikai savas sesijas un savu kontu, bet kalendārā visu vārdus un laikus. BOX kods un iekārtu iestatījumi redzami tikai adminam. Paroles glabā Supabase Auth.
@@ -38,7 +43,7 @@ Lietotājs redz tikai savas sesijas un savu kontu, bet kalendārā visu vārdus 
 | Posms | Saturs | Statuss |
 |---|---|---|
 | 1. Pamata versija | Ielūgumi, kalendārs, QR iečekošanās, atrašanās vietas pārbaude, ziņošana par neatbrīvotu BOX, maksa, mans konts, kase, admina panelis, mēneša atskaite un CSV | Uzprogrammēts; demo versija: https://arasai-nor.github.io/box-app/ ; gaida datubāzes pieslēgšanu |
-| 2. Disciplīna | Push atgādinājumi, neierašanās noteikums, Shelly relejs pacēlāja barošanai | Rezervēts |
+| 2. Disciplīna | Servera push atgādinājumi (arī par neizčekošanos), neierašanās noteikums, Shelly relejs pacēlāja barošanai | Rezervēts |
 | 3. AI kameras | 2 kameras, aizņemtības detekcija, brīdinājums par lietošanu bez iečekošanās; tiešraide tikai adminam | Rezervēts |
 
 Pirms 2. un 3. posma tiks sagatavots iepirkumu saraksts (amazon.de / LV veikali), slēgumu shēmas un instrukcijas.
