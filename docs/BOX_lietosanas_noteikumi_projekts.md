@@ -11,7 +11,8 @@
 2.1. BOX drīkst lietot tikai ar rezervāciju aplikācijā BOX vai, ja BOX ir brīvs, iečekojoties uz vietas.
 2.2. Sākot darbu, lietotājs iečekojas, noskenējot QR kodu BOX iekšpusē. Beidzot darbu, viņš izčekojas.
 2.3. Auto, kas atstāts BOX vai uz pacēlāja, aizņem BOX. Laiks tiek skaitīts līdz izčekošanās brīdim.
-2.4. BOX koda nodošana citiem vai iečekošanās ārpus BOX ir aizliegta.
+2.4. BOX koda nodošana citiem vai iečekošanās ārpus BOX ir aizliegta. Iečekojoties un izčekojoties aplikācija pārbauda telefona atrašanās vietu.
+2.5. Izčekoties drīkst tikai tad, kad auto ir izbraukts un BOX ir brīvs. Ja nākamais lietotājs atrod BOX neatbrīvotu, viņš to ziņo aplikācijā, un iepriekšējam lietotājam laiks tiek skaitīts no viņa iečekošanās līdz brīdim, kad BOX tiešām atbrīvots.
 
 **3. Samaksa**
 3.1. Likme ir 2 €/h par faktisko lietošanas laiku, minimums 1 h vienā reizē.

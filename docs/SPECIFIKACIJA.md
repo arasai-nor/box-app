@@ -1,4 +1,4 @@
-# BOX aplikācija — funkcionālā specifikācija (v1, 20.11.2026)
+# BOX aplikācija — funkcionālā specifikācija (v1.1, 21.11.2026)
 
 **Admins:** Aras Noreika · **Kods:** GitHub `arasai-nor/box-app`
 
@@ -12,6 +12,8 @@
 | 3 | Norēķini | Bez bankām. Summas krājas virtuāli. Admins reģistrē nosegšanu ar darbu BOX labā vai skaidru naudu (tā nonāk BOX kasē) |
 | 4 | Platforma | PWA: viens kods iPhone un Android, saite caur WhatsApp |
 | 5 | Shelly relejs, kameras | Vietas rezervētas, pagaidām neaktīvas |
+| 6 | Atrašanās vietas pārbaude | Iečekoties, izčekoties un ziņot var tikai 250 m rādiusā no BOX (Viskaļu iela 22, Rīga). Rādiusu un punktu maina admins |
+| 7 | Neatbrīvots BOX | Nākamais lietotājs var ziņot "BOX nav atbrīvots"; iepriekšējam laiks atkal skaitās no viņa iečekošanās |
 
 ## 2. Noteikumi (ieprogrammēti datubāzē)
 1. **Reģistrācija** notiek ar personīgu vienreizēju ielūguma kodu. Bez koda konts paliek neaktīvs līdz admina apstiprinājumam.
@@ -25,6 +27,9 @@
 6. **Mēneša slēgšana** notiek 1. datumā automātiski vai ar admina pogu. Summa nonāk lietotāja virtuālajā kontā. Dubulta slēgšana nav iespējama.
 7. **Norēķins** ar darbu vai skaidru naudu samazina parādu. Skaidrā nauda reizē tiek ierakstīta kā kases ienākums.
 8. **Kases** ienākumi un izdevumi ir redzami visiem lietotājiem.
+9. **Atrašanās vieta:** iečekojoties, izčekojoties un ziņojot aplikācija pārbauda telefona atrašanās vietu (rādiuss 250 m, GPS neprecizitātes pielaide līdz 100 m). Adminam, izčekojot citu lietotāju, pārbaude netiek piemērota. Pārbaudi var izslēgt admina iestatījumos.
+10. **"BOX nav atbrīvots":** ja BOX nav iečekots, bet tajā stāv iepriekšējā lietotāja auto, jebkurš cits lietotājs uz vietas var to ziņot. Pēdējā lietotāja sesija tiek atvērta no jauna, un laiks skaitās no viņa sākotnējās iečekošanās, līdz viņš izčekojas uz vietas. Ziņot nevar, ja kopš izčekošanās pagājušas vairāk nekā 14 dienas vai mēnesis jau slēgts. Kļūdainu ziņojumu admins noraida, un tiek atjaunots sākotnējais laiks un summa.
+11. **Mēneša piederība:** lietošanas reize tiek ieskaitīta tajā mēnesī, kurā notikusi izčekošanās.
 
 ## 3. Drošība
 Lietotājs redz tikai savas sesijas un savu kontu, bet kalendārā visu vārdus un laikus. BOX kods un iekārtu iestatījumi redzami tikai adminam. Paroles glabā Supabase Auth.
@@ -32,7 +37,7 @@ Lietotājs redz tikai savas sesijas un savu kontu, bet kalendārā visu vārdus 
 ## 4. Posmi
 | Posms | Saturs | Statuss |
 |---|---|---|
-| 1. Pamata versija | Ielūgumi, kalendārs, QR iečekošanās, maksa, mans konts, kase, admina panelis, mēneša atskaite un CSV | Uzprogrammēts, gaida palaišanu |
+| 1. Pamata versija | Ielūgumi, kalendārs, QR iečekošanās, atrašanās vietas pārbaude, ziņošana par neatbrīvotu BOX, maksa, mans konts, kase, admina panelis, mēneša atskaite un CSV | Uzprogrammēts; demo versija: https://arasai-nor.github.io/box-app/ ; gaida datubāzes pieslēgšanu |
 | 2. Disciplīna | Push atgādinājumi, neierašanās noteikums, Shelly relejs pacēlāja barošanai | Rezervēts |
 | 3. AI kameras | 2 kameras, aizņemtības detekcija, brīdinājums par lietošanu bez iečekošanās; tiešraide tikai adminam | Rezervēts |
 

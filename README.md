@@ -2,7 +2,7 @@
 
 Tīmekļa aplikācija (PWA) BOX remonta garāžai ar HOFMANN pacēlāju. Tā instalējas uz iPhone un Android telefona sākuma ekrāna bez App Store un Google Play.
 
-**Ko tā dara:** rezervē BOX kalendārā (pārklāšanās nav iespējama), iečeko un izčeko ar QR kodu BOX iekšpusē un skaita maksu par faktisko laiku (2 €/h, minimums 1 h). Tai ir virtuālais konts (parāds BOX kasei), ko var nosegt ar darbu vai skaidru naudu, un caurspīdīga BOX kase. Mēnesis tiek slēgts automātiski katra mēneša 1. datumā.
+**Ko tā dara:** rezervē BOX kalendārā (pārklāšanās nav iespējama), iečeko un izčeko ar QR kodu BOX iekšpusē (ar atrašanās vietas pārbaudi 250 m rādiusā), ļauj ziņot par neatbrīvotu BOX un skaita maksu par faktisko laiku (2 €/h, minimums 1 h). Tai ir virtuālais konts (parāds BOX kasei), ko var nosegt ar darbu vai skaidru naudu, un caurspīdīga BOX kase. Mēnesis tiek slēgts automātiski katra mēneša 1. datumā.
 
 Kamēr `js/config.js` nav aizpildīts, aplikācija strādā **DEMO režīmā**: dati glabājas tikai tajā pārlūkā.
 

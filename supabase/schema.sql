@@ -18,6 +18,10 @@ create table if not exists public.settings (
   checkin_code          text not null default upper(substr(encode(gen_random_bytes(6),'hex'),1,6)),
   noshow_enabled        boolean not null default false,       -- 2. posms
   noshow_minutes        int not null default 30,              -- 2. posms
+  geo_enabled           boolean not null default true,        -- atrašanās vietas pārbaude
+  box_lat               double precision not null default 56.99029,  -- Viskaļu iela 22, Rīga
+  box_lng               double precision not null default 24.18677,
+  geo_radius_m          int not null default 250,             -- atļautais attālums no BOX (m)
   updated_at            timestamptz not null default now()
 );
 insert into public.settings (id) values (1) on conflict do nothing;
@@ -77,6 +81,23 @@ create table if not exists public.sessions (
 );
 -- BOX ir viens → vienlaikus drīkst būt tikai viena atvērta sesija
 create unique index if not exists sessions_one_open on public.sessions ((true)) where checked_out_at is null;
+
+-- Ziņojumi "BOX nav atbrīvots": nākamais lietotājs atrod svešu auto → iepriekšējā sesija tiek atvērta no jauna
+create table if not exists public.reports (
+  id                  bigserial primary key,
+  session_id          bigint not null references public.sessions(id),
+  reporter_id         uuid not null references public.profiles(id),
+  note                text,
+  prev_checked_out_at timestamptz not null,   -- sākotnējās vērtības (lai admins var ziņojumu noraidīt)
+  prev_minutes        int,
+  prev_billed_minutes int,
+  prev_amount         numeric(8,2),
+  prev_closed_by      uuid,
+  status              text not null default 'open' check (status in ('open','resolved','rejected')),
+  resolved_by         uuid references public.profiles(id),
+  resolved_at         timestamptz,
+  created_at          timestamptz not null default now()
+);
 
 -- ---------------------------------------------------------------------
 -- 5. Virtuālais konts (parāds BOX kasei)
@@ -147,6 +168,26 @@ language sql stable security definer set search_path = public as $$
   select exists (select 1 from profiles where id = auth.uid() and active);
 $$;
 
+-- Atrašanās vietas pārbaude: attālums līdz BOX (haversine). Precizitātes pielaide līdz 100 m.
+create or replace function public.geo_check(p_lat double precision, p_lng double precision, p_acc double precision)
+returns void language plpgsql stable security definer set search_path = public as $$
+declare s settings; d double precision;
+begin
+  select * into s from settings where id = 1;
+  if not s.geo_enabled then return; end if;
+  if p_lat is null or p_lng is null then
+    raise exception 'Nav zināma tava atrašanās vieta — atļauj aplikācijai piekļuvi atrašanās vietai';
+  end if;
+  d := 2 * 6371000 * asin(sqrt(
+         power(sin(radians(p_lat - s.box_lat) / 2), 2) +
+         cos(radians(s.box_lat)) * cos(radians(p_lat)) * power(sin(radians(p_lng - s.box_lng) / 2), 2)));
+  if d > s.geo_radius_m + least(coalesce(p_acc, 0), 100) then
+    raise exception 'Tu neesi pie BOX (attālums ~%, atļauts % m)',
+      case when d >= 1000 then round((d / 1000)::numeric, 1) || ' km' else round(d::numeric) || ' m' end,
+      s.geo_radius_m;
+  end if;
+end $$;
+
 -- Jauns lietotājs: profils + ielūguma pārbaude. Pirmais lietotājs = admins.
 create or replace function public.handle_new_user() returns trigger
 language plpgsql security definer set search_path = public as $$
@@ -213,13 +254,15 @@ begin
 end $$;
 
 -- Iečekoties ar QR kodu
-create or replace function public.check_in(p_code text) returns sessions
+create or replace function public.check_in(p_code text, p_lat double precision default null,
+  p_lng double precision default null, p_acc double precision default null) returns sessions
 language plpgsql security definer set search_path = public as $$
 declare s settings; b bookings; ses sessions;
 begin
   if not is_active() then raise exception 'Konts nav aktivizēts'; end if;
   select * into s from settings where id = 1;
   if upper(trim(p_code)) <> s.checkin_code then raise exception 'Nepareizs BOX kods'; end if;
+  perform geo_check(p_lat, p_lng, p_acc);
   if exists (select 1 from sessions where checked_out_at is null) then
     raise exception 'BOX šobrīd jau ir aizņemts';
   end if;
@@ -257,8 +300,9 @@ begin
   return ses;
 end $$;
 
--- Izčekoties (sava sesija; admins var aizvērt jebkuru)
-create or replace function public.check_out(p_session bigint default null) returns sessions
+-- Izčekoties (sava sesija — tikai pie BOX; admins var aizvērt jebkuru sesiju no jebkuras vietas)
+create or replace function public.check_out(p_session bigint default null, p_lat double precision default null,
+  p_lng double precision default null, p_acc double precision default null) returns sessions
 language plpgsql security definer set search_path = public as $$
 declare s settings; ses sessions; v_min int; v_bill int;
 begin
@@ -270,6 +314,7 @@ begin
     if found and ses.user_id <> auth.uid() and not is_admin() then raise exception 'Nav tiesību'; end if;
   end if;
   if not found then raise exception 'Nav atvērtas sesijas'; end if;
+  if ses.user_id = auth.uid() then perform geo_check(p_lat, p_lng, p_acc); end if;
 
   v_min  := greatest(1, ceil(extract(epoch from (now() - ses.checked_in_at)) / 60.0)::int);
   v_bill := greatest(v_min, s.min_minutes);
@@ -281,8 +326,10 @@ begin
 
   -- rezervācija: ja beidza agrāk → atbrīvo atlikušo laiku kalendārā
   update bookings set status = 'completed',
-         ends_at = case when ends_at > now() then greatest(now(), starts_at + interval '1 minute') else ends_at end
+         ends_at = case when ends_at > now() then greatest(now(), starts_at + interval '1 second') else ends_at end
    where id = ses.booking_id;
+
+  update reports set status = 'resolved', resolved_at = now() where session_id = ses.id and status = 'open';
 
   insert into device_events (device_id, event, payload)
   select id, 'checkout_hook', jsonb_build_object('session', ses.id) from devices where kind like 'shelly%' and enabled;
@@ -292,12 +339,77 @@ end $$;
 
 -- BOX statuss (redz visi aktīvie)
 create or replace function public.box_status()
-returns table (session_id bigint, user_id uuid, full_name text, car text, checked_in_at timestamptz, booking_ends timestamptz)
+returns table (session_id bigint, user_id uuid, full_name text, car text, checked_in_at timestamptz, booking_ends timestamptz,
+               reported_by text, reported_at timestamptz)
 language sql stable security definer set search_path = public as $$
-  select se.id, se.user_id, p.full_name, p.car, se.checked_in_at, b.ends_at
+  select se.id, se.user_id, p.full_name, p.car, se.checked_in_at, b.ends_at, rp.full_name, r.created_at
     from sessions se join profiles p on p.id = se.user_id
     left join bookings b on b.id = se.booking_id
+    left join reports r on r.session_id = se.id and r.status = 'open'
+    left join profiles rp on rp.id = r.reporter_id
    where se.checked_out_at is null and is_active();
+$$;
+
+-- Ziņot "BOX nav atbrīvots": pēdējā lietotāja sesija tiek atvērta no jauna, laiks skaitās no viņa iečekošanās brīža
+create or replace function public.report_not_vacated(p_lat double precision default null, p_lng double precision default null,
+  p_acc double precision default null, p_note text default null) returns json
+language plpgsql security definer set search_path = public as $$
+declare ses sessions; p profiles;
+begin
+  if not is_active() then raise exception 'Konts nav aktivizēts'; end if;
+  perform geo_check(p_lat, p_lng, p_acc);
+  if exists (select 1 from sessions where checked_out_at is null) then
+    raise exception 'BOX šobrīd ir iečekots — ziņot nav vajadzības';
+  end if;
+  select * into ses from sessions order by checked_out_at desc limit 1;
+  if not found then raise exception 'Nav neviena iepriekšējā lietotāja'; end if;
+  if ses.user_id = auth.uid() then
+    raise exception 'Pēdējais lietotājs esi tu pats — ja tavs auto vēl ir BOX, iečekojies no jauna';
+  end if;
+  if ses.checked_out_at < now() - interval '14 days' then
+    raise exception 'Pēdējā lietošana bija pirms vairāk nekā 14 dienām — sazinies ar administratoru';
+  end if;
+  if exists (select 1 from ledger where user_id = ses.user_id and kind = 'usage'
+              and period = date_trunc('month', ses.checked_out_at at time zone 'Europe/Riga')::date) then
+    raise exception 'Šis mēnesis jau ir slēgts — sazinies ar administratoru';
+  end if;
+  if exists (select 1 from reports where session_id = ses.id and status = 'rejected') then
+    raise exception 'Ziņojums par šo reizi jau tika noraidīts — sazinies ar administratoru';
+  end if;
+
+  insert into reports (session_id, reporter_id, note, prev_checked_out_at, prev_minutes, prev_billed_minutes, prev_amount, prev_closed_by)
+  values (ses.id, auth.uid(), p_note, ses.checked_out_at, ses.minutes, ses.billed_minutes, ses.amount, ses.closed_by);
+  update sessions set checked_out_at = null, minutes = null, billed_minutes = null, amount = null, closed_by = null
+   where id = ses.id;
+
+  select * into p from profiles where id = ses.user_id;
+  return json_build_object('full_name', p.full_name, 'phone', p.phone, 'checked_in_at', ses.checked_in_at);
+end $$;
+
+-- Admins noraida ziņojumu: sesijai tiek atjaunots sākotnējais izčekošanās laiks un summa
+create or replace function public.reject_report(p_id bigint) returns void
+language plpgsql security definer set search_path = public as $$
+declare r reports;
+begin
+  if not is_admin() then raise exception 'Nav tiesību'; end if;
+  select * into r from reports where id = p_id;
+  if not found then raise exception 'Ziņojums nav atrasts'; end if;
+  if r.status = 'rejected' then raise exception 'Ziņojums jau ir noraidīts'; end if;
+  update sessions set checked_out_at = r.prev_checked_out_at, minutes = r.prev_minutes,
+         billed_minutes = r.prev_billed_minutes, amount = r.prev_amount, closed_by = r.prev_closed_by
+   where id = r.session_id;
+  update reports set status = 'rejected', resolved_by = auth.uid(), resolved_at = now() where id = p_id;
+end $$;
+
+-- Ziņojumu saraksts (admins)
+create or replace function public.list_reports()
+returns table (id bigint, created_at timestamptz, status text, note text, reporter_name text, user_name text,
+               checked_in_at timestamptz, prev_checked_out_at timestamptz, prev_amount numeric)
+language sql stable security definer set search_path = public as $$
+  select r.id, r.created_at, r.status, r.note, rp.full_name, up.full_name, se.checked_in_at, r.prev_checked_out_at, r.prev_amount
+    from reports r join sessions se on se.id = r.session_id
+    join profiles rp on rp.id = r.reporter_id join profiles up on up.id = se.user_id
+   where is_admin() order by r.created_at desc limit 200;
 $$;
 
 -- Mēneša slēgšana: sesijas → virtuālais konts (vienreiz uz mēnesi)
@@ -314,7 +426,7 @@ begin
          'BOX lietošana ' || to_char(p_month, 'YYYY-MM') || ' (' || count(*) || ' reizes)',
          auth.uid()
     from sessions
-   where checked_out_at is not null and checked_in_at >= v_from and checked_in_at < v_to
+   where checked_out_at >= v_from and checked_out_at < v_to
    group by user_id
   on conflict (user_id, period) where kind = 'usage' do nothing;
   get diagnostics n = row_count;
@@ -356,6 +468,7 @@ alter table public.profiles      enable row level security;
 alter table public.invites       enable row level security;
 alter table public.bookings      enable row level security;
 alter table public.sessions      enable row level security;
+alter table public.reports       enable row level security;
 alter table public.ledger        enable row level security;
 alter table public.cash_entries  enable row level security;
 alter table public.devices       enable row level security;
@@ -364,7 +477,8 @@ alter table public.device_events enable row level security;
 -- settings: lasa aktīvie (bez koda!), maina admins
 create policy settings_admin_all on public.settings for all using (is_admin()) with check (is_admin());
 create or replace view public.public_settings with (security_invoker = false) as
-  select hourly_rate, min_minutes, checkin_early_minutes, walkin_minutes, noshow_enabled, noshow_minutes from settings;
+  select hourly_rate, min_minutes, checkin_early_minutes, walkin_minutes, noshow_enabled, noshow_minutes,
+         geo_enabled, geo_radius_m from settings;
 grant select on public.public_settings to authenticated;
 
 -- profiles: savu redz vienmēr; aktīvie redz citu vārdus; savu var labot (bez role/active)
@@ -383,6 +497,10 @@ create policy bookings_admin on public.bookings for all using (is_admin()) with 
 -- sessions: savas + admins
 create policy sessions_select on public.sessions for select using (user_id = auth.uid() or is_admin());
 create policy sessions_admin on public.sessions for all using (is_admin()) with check (is_admin());
+
+-- reports: ziņotājs + admins (pārējais caur RPC)
+create policy reports_select on public.reports for select using (reporter_id = auth.uid() or is_admin());
+create policy reports_admin on public.reports for all using (is_admin()) with check (is_admin());
 
 -- ledger: savs + admins
 create policy ledger_select on public.ledger for select using (user_id = auth.uid() or is_admin());

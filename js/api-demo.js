@@ -1,13 +1,18 @@
 // DEMO datu slānis — tie paši noteikumi kā Supabase datubāzē, bet dati glabājas šajā pārlūkā (localStorage).
 // Paredzēts aplikācijas izmēģināšanai, pirms pieslēgta īstā datubāze.
 
-const KEY = 'box_demo_v1';
+const KEY = 'box_demo_v2';
 const MIN = 60000;
 
 function uuid() { return (crypto.randomUUID ? crypto.randomUUID() : 'id-' + Math.random().toString(36).slice(2)); }
 function code(n = 6) { return Array.from({ length: n }, () => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[Math.floor(Math.random() * 32)]).join(''); }
 function iso(d) { return new Date(d).toISOString(); }
 function round2(x) { return Math.round(x * 100) / 100; }
+function distanceM(lat1, lng1, lat2, lng2) {
+  const r = x => x * Math.PI / 180;
+  const a = Math.sin(r(lat2 - lat1) / 2) ** 2 + Math.cos(r(lat1)) * Math.cos(r(lat2)) * Math.sin(r(lng2 - lng1) / 2) ** 2;
+  return 2 * 6371000 * Math.asin(Math.sqrt(a));
+}
 
 function seed() {
   const names = [
@@ -33,7 +38,8 @@ function seed() {
     { id: sid++, user_id: P('Māris'), booking_id: 2, checked_in_at: at(-2, 9, 0), checked_out_at: at(-2, 9, 40), minutes: 40, billed_minutes: 60, amount: 2.0 },
   ];
   return {
-    settings: { id: 1, hourly_rate: 2, min_minutes: 60, checkin_early_minutes: 15, walkin_minutes: 60, checkin_code: 'DEMO42', noshow_enabled: false, noshow_minutes: 30 },
+    settings: { id: 1, hourly_rate: 2, min_minutes: 60, checkin_early_minutes: 15, walkin_minutes: 60, checkin_code: 'DEMO42', noshow_enabled: false, noshow_minutes: 30,
+      geo_enabled: true, box_lat: 56.99029, box_lng: 24.18677, geo_radius_m: 250 },
     profiles, invites: [], bookings, sessions, ledger: [], cash: [
       { id: 1, entry_date: at(-10, 0).slice(0, 10), direction: 'out', category: 'instrumenti', amount: 39.9, description: 'Dinamometriskā atslēga (piemērs)' },
     ],
@@ -42,7 +48,8 @@ function seed() {
       { id: 2, kind: 'camera', name: 'Kamera 1', location: 'BOX kreisā puse', enabled: false },
       { id: 3, kind: 'camera', name: 'Kamera 2', location: 'BOX labā puse', enabled: false },
     ],
-    seq: { booking: bid, session: sid, ledger: 1, cash: 2 },
+    reports: [],
+    seq: { booking: bid, session: sid, ledger: 1, cash: 2, report: 1 },
     currentUser: null,
   };
 }
@@ -58,6 +65,14 @@ export function createDemoApi() {
   const overlaps = (s, e, exceptId) => db.bookings.some(b => live(b) && b.id !== exceptId &&
     new Date(b.starts_at) < new Date(e) && new Date(b.ends_at) > new Date(s));
   const name = id => db.profiles.find(p => p.id === id)?.full_name || '?';
+  const geoCheck = pos => {
+    const st = db.settings;
+    if (!st.geo_enabled) return;
+    need(pos && pos.lat != null && pos.lng != null, 'Nav zināma tava atrašanās vieta — atļauj aplikācijai piekļuvi atrašanās vietai');
+    const d = distanceM(pos.lat, pos.lng, st.box_lat, st.box_lng);
+    need(d <= st.geo_radius_m + Math.min(pos.acc || 0, 100),
+      `Tu neesi pie BOX (attālums ~${d >= 1000 ? (d / 1000).toFixed(1) + ' km' : Math.round(d) + ' m'}, atļauts ${st.geo_radius_m} m)`);
+  };
 
   return {
     demo: true,
@@ -105,12 +120,15 @@ export function createDemoApi() {
     async boxStatus() {
       const s = db.sessions.find(x => !x.checked_out_at); if (!s) return null;
       const b = db.bookings.find(x => x.id === s.booking_id); const p = db.profiles.find(x => x.id === s.user_id);
-      return { session_id: s.id, user_id: s.user_id, full_name: p?.full_name, car: p?.car, checked_in_at: s.checked_in_at, booking_ends: b?.ends_at };
+      const rep = db.reports.find(x => x.session_id === s.id && x.status === 'open');
+      return { session_id: s.id, user_id: s.user_id, full_name: p?.full_name, car: p?.car, checked_in_at: s.checked_in_at, booking_ends: b?.ends_at,
+        reported_by: rep ? name(rep.reporter_id) : null, reported_at: rep?.created_at || null };
     },
-    async checkIn(c) {
+    async checkIn(c, pos = null) {
       const st = db.settings, now = Date.now();
       need(me()?.active, 'Konts nav aktivizēts');
       need((c || '').trim().toUpperCase() === st.checkin_code, 'Nepareizs BOX kods');
+      geoCheck(pos);
       need(!db.sessions.some(s => !s.checked_out_at), 'BOX šobrīd jau ir aizņemts');
       let b = db.bookings.filter(x => x.user_id === me().id && x.status === 'active' &&
         now >= new Date(x.starts_at) - st.checkin_early_minutes * MIN && now < new Date(x.ends_at))
@@ -126,18 +144,52 @@ export function createDemoApi() {
       const s = { id: db.seq.session++, user_id: me().id, booking_id: b.id, checked_in_at: iso(now), checked_out_at: null };
       db.sessions.push(s); save(); return s;
     },
-    async checkOut(sessionId = null) {
+    async checkOut(sessionId = null, pos = null) {
       const st = db.settings, now = Date.now();
       const s = sessionId ? db.sessions.find(x => x.id === sessionId && !x.checked_out_at)
         : db.sessions.find(x => x.user_id === me().id && !x.checked_out_at);
       need(s, 'Nav atvērtas sesijas');
       need(s.user_id === me().id || isAdmin(), 'Nav tiesību');
+      if (s.user_id === me().id) geoCheck(pos);
       const m = Math.max(1, Math.ceil((now - new Date(s.checked_in_at)) / MIN));
       const bill = Math.max(m, st.min_minutes);
       Object.assign(s, { checked_out_at: iso(now), minutes: m, billed_minutes: bill, amount: round2(bill / 60 * st.hourly_rate), closed_by: s.user_id !== me().id ? me().id : null });
       const b = db.bookings.find(x => x.id === s.booking_id);
-      if (b) { b.status = 'completed'; if (new Date(b.ends_at) > now) b.ends_at = iso(Math.max(now, new Date(b.starts_at).getTime() + MIN)); }
+      if (b) { b.status = 'completed'; if (new Date(b.ends_at) > now) b.ends_at = iso(Math.max(now, new Date(b.starts_at).getTime() + 1000)); }
+      db.reports.filter(x => x.session_id === s.id && x.status === 'open').forEach(x => { x.status = 'resolved'; x.resolved_at = iso(now); });
       save(); return { ...s };
+    },
+    async reportNotVacated(pos = null, note = null) {
+      need(me()?.active, 'Konts nav aktivizēts');
+      geoCheck(pos);
+      need(!db.sessions.some(s => !s.checked_out_at), 'BOX šobrīd ir iečekots — ziņot nav vajadzības');
+      const s = [...db.sessions].sort((a, b) => b.checked_out_at.localeCompare(a.checked_out_at))[0];
+      need(s, 'Nav neviena iepriekšējā lietotāja');
+      need(s.user_id !== me().id, 'Pēdējais lietotājs esi tu pats — ja tavs auto vēl ir BOX, iečekojies no jauna');
+      need(new Date(s.checked_out_at) > Date.now() - 14 * 86400000, 'Pēdējā lietošana bija pirms vairāk nekā 14 dienām — sazinies ar administratoru');
+      const d = new Date(s.checked_out_at); const period = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+      need(!db.ledger.some(l => l.user_id === s.user_id && l.kind === 'usage' && l.period === period), 'Šis mēnesis jau ir slēgts — sazinies ar administratoru');
+      need(!db.reports.some(x => x.session_id === s.id && x.status === 'rejected'), 'Ziņojums par šo reizi jau tika noraidīts — sazinies ar administratoru');
+      db.reports.push({ id: db.seq.report++, session_id: s.id, reporter_id: me().id, note, status: 'open', created_at: iso(Date.now()),
+        prev_checked_out_at: s.checked_out_at, prev_minutes: s.minutes, prev_billed_minutes: s.billed_minutes, prev_amount: s.amount, prev_closed_by: s.closed_by || null });
+      Object.assign(s, { checked_out_at: null, minutes: null, billed_minutes: null, amount: null, closed_by: null });
+      const p = db.profiles.find(x => x.id === s.user_id);
+      save(); return { full_name: p.full_name, phone: p.phone, checked_in_at: s.checked_in_at };
+    },
+    async rejectReport(id) {
+      need(isAdmin(), 'Nav tiesību');
+      const r = db.reports.find(x => x.id === id); need(r, 'Ziņojums nav atrasts');
+      need(r.status !== 'rejected', 'Ziņojums jau ir noraidīts');
+      const s = db.sessions.find(x => x.id === r.session_id);
+      Object.assign(s, { checked_out_at: r.prev_checked_out_at, minutes: r.prev_minutes, billed_minutes: r.prev_billed_minutes, amount: r.prev_amount, closed_by: r.prev_closed_by });
+      Object.assign(r, { status: 'rejected', resolved_by: me().id, resolved_at: iso(Date.now()) });
+      save();
+    },
+    async listReports() {
+      need(isAdmin(), 'Nav tiesību');
+      return [...db.reports].reverse().map(r => { const s = db.sessions.find(x => x.id === r.session_id);
+        return { id: r.id, created_at: r.created_at, status: r.status, note: r.note, reporter_name: name(r.reporter_id), user_name: name(s.user_id),
+          checked_in_at: s.checked_in_at, prev_checked_out_at: r.prev_checked_out_at, prev_amount: r.prev_amount }; });
     },
 
     async mySessions() { return db.sessions.filter(s => s.user_id === me().id).sort((a, b) => b.checked_in_at.localeCompare(a.checked_in_at)); },
@@ -153,7 +205,7 @@ export function createDemoApi() {
     async createInvite(note) { need(isAdmin(), 'Nav tiesību'); const i = { code: code(8), note, created_at: iso(Date.now()) }; db.invites.push(i); save(); return i; },
     async deleteInvite(c) { db.invites = db.invites.filter(i => i.code !== c); save(); },
     async listSessions(f, t) {
-      return db.sessions.filter(s => s.checked_in_at >= f && s.checked_in_at < t).sort((a, b) => a.checked_in_at.localeCompare(b.checked_in_at)).map(s => ({ ...s, full_name: name(s.user_id) }));
+      return db.sessions.filter(s => s.checked_out_at && s.checked_out_at >= f && s.checked_out_at < t).sort((a, b) => a.checked_in_at.localeCompare(b.checked_in_at)).map(s => ({ ...s, full_name: name(s.user_id) }));
     },
     async balances() {
       return db.profiles.filter(p => isAdmin() || p.id === me().id).map(p => ({ user_id: p.id, full_name: p.full_name,
@@ -171,7 +223,7 @@ export function createDemoApi() {
       const d = new Date(monthDate + 'T00:00:00'); const f = new Date(d.getFullYear(), d.getMonth(), 1); const t = new Date(d.getFullYear(), d.getMonth() + 1, 1);
       const period = `${f.getFullYear()}-${String(f.getMonth() + 1).padStart(2, '0')}-01`;
       const by = {};
-      db.sessions.filter(s => s.checked_out_at && new Date(s.checked_in_at) >= f && new Date(s.checked_in_at) < t)
+      db.sessions.filter(s => s.checked_out_at && new Date(s.checked_out_at) >= f && new Date(s.checked_out_at) < t)
         .forEach(s => { (by[s.user_id] ||= { min: 0, amt: 0, n: 0 }); by[s.user_id].min += s.billed_minutes; by[s.user_id].amt += s.amount; by[s.user_id].n++; });
       let n = 0;
       for (const [uid, v] of Object.entries(by)) {

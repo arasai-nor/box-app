@@ -64,8 +64,17 @@ export function createSupabaseApi(cfg) {
       const rows = ok(await sb.rpc('box_status'));
       return rows?.[0] || null;
     },
-    async checkIn(code) { return ok(await sb.rpc('check_in', { p_code: code })); },
-    async checkOut(sessionId = null) { return ok(await sb.rpc('check_out', { p_session: sessionId })); },
+    async checkIn(code, pos = null) {
+      return ok(await sb.rpc('check_in', { p_code: code, p_lat: pos?.lat ?? null, p_lng: pos?.lng ?? null, p_acc: pos?.acc ?? null }));
+    },
+    async checkOut(sessionId = null, pos = null) {
+      return ok(await sb.rpc('check_out', { p_session: sessionId, p_lat: pos?.lat ?? null, p_lng: pos?.lng ?? null, p_acc: pos?.acc ?? null }));
+    },
+    async reportNotVacated(pos = null, note = null) {
+      return ok(await sb.rpc('report_not_vacated', { p_lat: pos?.lat ?? null, p_lng: pos?.lng ?? null, p_acc: pos?.acc ?? null, p_note: note || null }));
+    },
+    async listReports() { return ok(await sb.rpc('list_reports')); },
+    async rejectReport(id) { ok(await sb.rpc('reject_report', { p_id: id })); },
 
     // ---------- mans konts ----------
     async mySessions() {
@@ -90,7 +99,7 @@ export function createSupabaseApi(cfg) {
     async deleteInvite(code) { ok(await sb.from('invites').delete().eq('code', code)); },
     async listSessions(fromIso, toIso) {
       const rows = ok(await sb.from('sessions').select('*, profiles!sessions_user_id_fkey(full_name)')
-        .gte('checked_in_at', fromIso).lt('checked_in_at', toIso).order('checked_in_at'));
+        .gte('checked_out_at', fromIso).lt('checked_out_at', toIso).order('checked_in_at'));
       return rows.map(r => ({ ...r, full_name: r.profiles?.full_name || '?' }));
     },
     async balances() { return ok(await sb.rpc('balances')); },
