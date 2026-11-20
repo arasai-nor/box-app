@@ -1,4 +1,4 @@
-# BOX aplikācija — funkcionālā specifikācija (v1.2, 21.11.2026)
+# BOX aplikācija — funkcionālā specifikācija (v1.3, 21.11.2026)
 
 **Admins:** Aras Noreika · **Kods:** GitHub `arasai-nor/box-app`
 
@@ -15,6 +15,8 @@
 | 6 | Atrašanās vietas pārbaude | Iečekoties, izčekoties un ziņot var tikai 250 m rādiusā no BOX (Viskaļu iela 22, Rīga; punkts 56.990484, 24.185431). Rādiusu un punktu maina admins |
 | 8 | Noteikumi | Aplikācija darbojas tikai pēc tam, kad dalībnieks izlasījis un apstiprinājis īsos BOX noteikumus. Glabājas, kurš kuru versiju un kad apstiprinājis. Jauna versija = visiem jāapstiprina no jauna |
 | 9 | HOLD | Avārijas vai ilga remonta gadījumā admins aptur BOX konkrētam dalībniekam. To redz visi. Stundu skaitītājs HOLD laikā neskaita; summu, par ko vienojas, admins ieraksta, beidzot HOLD |
+| 10 | Dalībnieku maiņa | Jaunu dalībnieku admins pievieno ar personīgu ielūguma saiti (Admins → Dalībnieki → Pievienot dalībnieku). Dalībnieku, kurš aiziet, admins izslēdz: viņš aplikācijā redz paziņojumu, ka vairs nav BOX dalībnieks; vēsture un atlikums saglabājas; dalību var atjaunot |
+| 11 | Dizains | Gaišs fons, noapaļotas kartītes, peldoša navigācija; statusa bloks pilnā krāsā ar lieliem burtiem: zaļš = brīvs, sarkans = aizņemts, dzeltens = HOLD |
 | 7 | Neatbrīvots BOX | Nākamais lietotājs var ziņot "BOX nav atbrīvots"; iepriekšējam laiks atkal skaitās no viņa iečekošanās |
 
 ## 2. Noteikumi (ieprogrammēti datubāzē)
@@ -34,6 +36,7 @@
 11. **Mēneša piederība:** lietošanas reize tiek ieskaitīta tajā mēnesī, kurā notikusi izčekošanās.
 12. **Noteikumu apstiprināšana:** kamēr dalībnieks nav apstiprinājis jaunāko noteikumu versiju, viņš redz tikai noteikumu ekrānu, un datubāze neļauj rezervēt, iečekoties vai skatīt kalendāru. Noteikumu tekstu admins maina sadaļā Admins → Noteikumi.
 13. **HOLD:** vienlaikus var būt tikai viens. Uzliekot HOLD, citu dalībnieku rezervācijas šajā laikā tiek atceltas; ja dalībnieks pats ir iečekots, viņa sesija tiek noslēgta ar parasto maksu. HOLD laikā nevar rezervēt, iečekoties un ziņot. HOLD redzams sākuma ekrānā un kalendārā ar dalībnieka vārdu, iemeslu, aptuveno beigu laiku un saziņas pogām. Beidzot HOLD, admins ieraksta summu (var būt 0), kas nonāk dalībnieka kontā.
+15. **Izslēgšana:** izslēgt nevar dalībnieku, kurš tobrīd ir iečekots vai kuram ir aktīvs HOLD. Izslēdzot tiek atceltas viņa nākotnes rezervācijas un noņemtas admina tiesības. Izslēgtais var ielogoties, bet redz tikai paziņojumu par dalības beigām un savu nenokārtoto atlikumu.
 14. **Brīdinājums par aizbraukšanu:** ja dalībnieks ir iečekots un aplikācija ir atvērta, bet telefons vairs nav BOX zonā, parādās sarkans brīdinājums ar vibrāciju un saziņu ar adminu. Kad aplikācija ir aizvērta, tīmekļa aplikācija atrašanās vietu izsekot nevar; šim gadījumam 2. posmā būs servera push atgādinājumi (pēc rezervācijas beigām un ik pēc noteikta laika, kamēr sesija ir atvērta).
 
 ## 3. Drošība

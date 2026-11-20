@@ -36,6 +36,7 @@ create table if not exists public.profiles (
   car        text,                                   -- auto marka / numurs
   role       text not null default 'member' check (role in ('admin','member')),
   active     boolean not null default false,         -- tikai aktīvi drīkst rezervēt
+  removed_at timestamptz,                            -- izslēgts no BOX (dalība beigusies); vēsture un atlikums saglabājas
   created_at timestamptz not null default now()
 );
 
@@ -516,6 +517,32 @@ language sql stable security definer set search_path = public as $$
    where is_admin() order by r.created_at desc limit 200;
 $$;
 
+-- Admins izslēdz dalībnieku no BOX (piem., mainījis darbavietu). Vēsture un atlikums saglabājas, nākotnes rezervācijas tiek atceltas.
+create or replace function public.remove_member(p_user uuid) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if not is_admin() then raise exception 'Nav tiesību'; end if;
+  if p_user = auth.uid() then raise exception 'Sevi izslēgt nevar'; end if;
+  if not exists (select 1 from profiles where id = p_user) then raise exception 'Dalībnieks nav atrasts'; end if;
+  if exists (select 1 from sessions where user_id = p_user and checked_out_at is null) then
+    raise exception 'Dalībnieks šobrīd ir iečekots BOX — vispirms izčeko viņu';
+  end if;
+  if exists (select 1 from holds where user_id = p_user and ended_at is null) then
+    raise exception 'Dalībniekam ir aktīvs HOLD — vispirms beidz to';
+  end if;
+  update bookings set status = 'cancelled', note = trim(coalesce(note, '') || ' (atcelts: dalība beigusies)')
+   where user_id = p_user and status = 'active';
+  update profiles set active = false, role = 'member', removed_at = now() where id = p_user;
+end $$;
+
+create or replace function public.restore_member(p_user uuid) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if not is_admin() then raise exception 'Nav tiesību'; end if;
+  update profiles set active = true, removed_at = null where id = p_user and removed_at is not null;
+  if not found then raise exception 'Dalībnieks nav izslēgts'; end if;
+end $$;
+
 -- HOLD: redz visi aktīvie lietotāji
 create or replace function public.box_hold()
 returns table (id bigint, user_id uuid, full_name text, phone text, starts_at timestamptz, expected_end timestamptz, reason text)
@@ -672,7 +699,8 @@ grant select on public.public_settings to authenticated;
 create policy profiles_select on public.profiles for select using (id = auth.uid() or is_active());
 create policy profiles_update_self on public.profiles for update using (id = auth.uid())
   with check (id = auth.uid() and role = (select role from profiles where id = auth.uid())
-                               and active = (select active from profiles where id = auth.uid()));
+                               and active = (select active from profiles where id = auth.uid())
+                               and removed_at is not distinct from (select removed_at from profiles where id = auth.uid()));
 create policy profiles_admin on public.profiles for all using (is_admin()) with check (is_admin());
 
 create policy invites_admin on public.invites for all using (is_admin()) with check (is_admin());

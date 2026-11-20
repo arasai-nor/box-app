@@ -214,6 +214,19 @@ export function createDemoApi() {
 
     async listProfiles() { return [...db.profiles].sort((a, b) => a.full_name.localeCompare(b.full_name)); },
     async updateProfile(id, patch) { need(isAdmin(), 'Nav tiesību'); Object.assign(db.profiles.find(p => p.id === id), patch); save(); },
+    async removeMember(id) {
+      need(isAdmin(), 'Nav tiesību'); need(id !== me().id, 'Sevi izslēgt nevar');
+      const p = db.profiles.find(x => x.id === id); need(p, 'Dalībnieks nav atrasts');
+      need(!db.sessions.some(s => s.user_id === id && !s.checked_out_at), 'Dalībnieks šobrīd ir iečekots BOX — vispirms izčeko viņu');
+      need(!db.holds.some(h => h.user_id === id && !h.ended_at), 'Dalībniekam ir aktīvs HOLD — vispirms beidz to');
+      db.bookings.filter(b => b.user_id === id && b.status === 'active').forEach(b => { b.status = 'cancelled'; b.note = ((b.note || '') + ' (atcelts: dalība beigusies)').trim(); });
+      Object.assign(p, { active: false, role: 'member', removed_at: iso(Date.now()) }); save();
+    },
+    async restoreMember(id) {
+      need(isAdmin(), 'Nav tiesību');
+      const p = db.profiles.find(x => x.id === id && x.removed_at); need(p, 'Dalībnieks nav izslēgts');
+      Object.assign(p, { active: true, removed_at: null }); save();
+    },
     async listInvites() { return db.invites.map(i => ({ ...i, used: i.used_by ? { full_name: name(i.used_by) } : null })).reverse(); },
     async createInvite(note) { need(isAdmin(), 'Nav tiesību'); const i = { code: code(8), note, created_at: iso(Date.now()) }; db.invites.push(i); save(); return i; },
     async deleteInvite(c) { db.invites = db.invites.filter(i => i.code !== c); save(); },

@@ -119,6 +119,8 @@ export function createSupabaseApi(cfg) {
     // ---------- admins ----------
     async listProfiles() { return ok(await sb.from('profiles').select('*').order('full_name')); },
     async updateProfile(id, patch) { ok(await sb.from('profiles').update(patch).eq('id', id)); },
+    async removeMember(id) { ok(await sb.rpc('remove_member', { p_user: id })); },
+    async restoreMember(id) { ok(await sb.rpc('restore_member', { p_user: id })); },
     async listInvites() { return ok(await sb.from('invites').select('*, used:profiles!invites_used_by_fkey(full_name)').order('created_at', { ascending: false })); },
     async createInvite(note) { return ok(await sb.from('invites').insert({ note, created_by: await uid() }).select().single()); },
     async deleteInvite(code) { ok(await sb.from('invites').delete().eq('code', code)); },
