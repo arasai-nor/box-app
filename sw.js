@@ -1,6 +1,6 @@
 // BOX service worker — ļauj instalēt aplikāciju un ātri atvērt to.
 // Dati vienmēr tiek ņemti no tīkla; kešā tikai aplikācijas faili.
-const VERSION = 'box-v1.6.0';
+const VERSION = 'box-v1.6.1';
 const SHELL = ['./', 'index.html', 'css/app.css', 'js/app.js', 'js/config.js', 'js/api-demo.js', 'js/api-supabase.js',
   'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
 

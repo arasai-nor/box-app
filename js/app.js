@@ -237,7 +237,7 @@ function viewLogin(q) {
           <label>Vārds, uzvārds</label><input name="full_name" required autocomplete="name">
           <label>Telefons</label><input name="phone" type="tel" autocomplete="tel" placeholder="+371 …">
           <label>Auto (marka, numurs) — nav obligāti</label><input name="car">
-          <label>Ielūguma kods</label><input name="invite_code" value="${esc(code)}" required style="text-transform:uppercase">` : ''}
+          <label>Ielūguma kods (no admina saites)</label><input name="invite_code" value="${esc(code)}" style="text-transform:uppercase">` : ''}
         <label>E-pasts</label><input name="email" type="email" required autocomplete="email">
         <label>Parole ${reg ? '(vismaz 6 simboli)' : ''}</label><input name="password" type="password" minlength="6" required autocomplete="${reg ? 'new-password' : 'current-password'}">
         <div class="err" id="err"></div><div class="sp"></div>
@@ -629,7 +629,7 @@ async function viewAccount() {
       <div class="sp"></div><button class="btn primary block">Saglabāt</button></form></div>
     <button class="btn ghost block" id="rules">📋 BOX noteikumi</button><div class="sp"></div>
     <button class="btn ghost block" id="out">Iziet no konta</button>
-    <p class="center muted small">BOX v1.6</p>`;
+    <p class="center muted small">BOX v1.6.1</p>`;
   main.querySelector('#rules').onclick = () => {
     const r = state.rules;
     modal(`<h3>BOX noteikumi</h3><div class="rules">${rulesHtml(r.body)}</div>
