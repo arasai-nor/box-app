@@ -7,7 +7,7 @@ const api = CONFIG.SUPABASE_URL
   : createDemoApi();
 
 const $app = document.getElementById('app');
-const state = { session: null, settings: null, rules: null, timers: [], geoWatch: null };
+const state = { session: null, settings: null, rules: null, timers: [], geoWatch: null, away: false, awaySession: null };
 const MIN = 60000;
 
 // ===================================================================
@@ -86,7 +86,6 @@ function parseHash() {
 }
 function clearTimers() {
   state.timers.forEach(clearInterval); state.timers = [];
-  if (state.geoWatch != null) { try { navigator.geolocation.clearWatch(state.geoWatch); } catch {} state.geoWatch = null; }
 }
 function distanceM(lat1, lng1, lat2, lng2) {
   const r = x => x * Math.PI / 180;
@@ -109,12 +108,11 @@ function takePhoto(title, hint, okLabel) {
     modal(`<h3>${esc(title)}</h3><p class="muted small">${esc(hint)}</p>
       <video class="scan" id="pv" playsinline muted autoplay></video><img class="photo" id="pi" hidden alt="">
       <div class="err" id="perr"></div><div class="sp"></div>
-      <button class="btn blue block lg" id="snap" disabled>📸 Nofotografēt</button>
-      <div class="grid2" id="after" hidden><button class="btn ghost" id="redo">Pārfotografēt</button><button class="btn red" id="use">${esc(okLabel)}</button></div>
+      <button class="btn red block lg" id="snap" disabled>📸 ${esc(okLabel)}</button>
       <div class="sp"></div><button class="btn ghost block" data-close>Atcelt</button>`,
     (m, close, bg) => {
       bg.addEventListener('closing', () => { stop(); if (!done) res(null); });
-      const v = m.querySelector('#pv'), img = m.querySelector('#pi'), snap = m.querySelector('#snap'), after = m.querySelector('#after'), err = m.querySelector('#perr');
+      const v = m.querySelector('#pv'), img = m.querySelector('#pi'), snap = m.querySelector('#snap'), err = m.querySelector('#perr');
       const start = async () => {
         try {
           if (!navigator.mediaDevices?.getUserMedia) throw new Error('šī ierīce neatbalsta kameru pārlūkā');
@@ -133,10 +131,9 @@ function takePhoto(title, hint, okLabel) {
         x.font = `600 ${fs}px sans-serif`; x.fillStyle = 'rgba(0,0,0,.55)'; x.fillRect(0, c.height - fs * 1.9, c.width, fs * 1.9);
         x.fillStyle = '#fff'; x.fillText(label, fs * .6, c.height - fs * .6);
         shot = c.toDataURL('image/jpeg', api.demo ? 0.6 : 0.78);
-        img.src = shot; img.hidden = false; v.hidden = true; stop(); snap.hidden = true; after.hidden = false;
+        img.src = shot; img.hidden = false; v.hidden = true; stop(); snap.disabled = true;
+        done = true; res(shot); close();
       };
-      m.querySelector('#redo').onclick = () => { shot = null; img.hidden = true; v.hidden = false; snap.hidden = false; snap.disabled = true; after.hidden = true; start(); };
-      m.querySelector('#use').onclick = () => { if (!shot) return; done = true; res(shot); close(); };
       start();
     });
   });
@@ -147,24 +144,39 @@ function contactButtons(phone) {
     <a class="btn wa" target="_blank" rel="noopener" href="${waHref(phone)}">WhatsApp</a></div>`;
 }
 const rulesHtml = body => String(body || '').split('\n').filter(l => l.trim()).map(l => `<p>${esc(l)}</p>`).join('');
-// Brīdinājums, ja lietotājs ir iečekots, bet telefons vairs nav pie BOX (darbojas, kamēr aplikācija ir atvērta)
+// Brīdinājums, ja lietotājs ir iečekots, bet telefons ir tālāk par atļauto rādiusu no BOX.
+// Darbojas visos skatos, kamēr aplikācija ir atvērta; atkārtojas ik pēc 5 minūtēm.
+const awayText = () => `Tu neesi izčekojies! Tu esi tālāk par ${state.settings?.geo_radius_m ?? 250} m no BOX, bet stundas turpina skaitīties — tas izmaksās dārgi. Atgriezies, kamēr neesi tālu, un nofotografē tukšu BOX: pēc foto izčekošanās notiks automātiski.`;
+function showAway(on) {
+  state.away = on;
+  const inHero = document.getElementById('away'); if (inHero) inHero.hidden = !on;
+  let bar = document.getElementById('awaybar');
+  if (!on) { bar?.remove(); return; }
+  if (!bar) { bar = document.createElement('a'); bar.id = 'awaybar'; bar.className = 'awaybar'; bar.href = '#/'; bar.textContent = '🚨 ' + awayText(); document.body.appendChild(bar); }
+}
+function stopAway() {
+  if (state.geoWatch != null) { try { navigator.geolocation.clearWatch(state.geoWatch); } catch {} state.geoWatch = null; }
+  state.awaySession = null; showAway(false);
+}
 function watchAway(status) {
   const st = state.settings;
-  if (!st?.geo_enabled || !navigator.geolocation || st.box_lat == null) return;
+  if (!st?.geo_enabled || !navigator.geolocation || st.box_lat == null) return stopAway();
+  if (state.geoWatch != null && state.awaySession === status.session_id) return showAway(!!state.away);
+  stopAway(); state.awaySession = status.session_id;
   state.geoWatch = navigator.geolocation.watchPosition(p => {
-    const el = document.getElementById('away'); if (!el) return;
     const d = distanceM(p.coords.latitude, p.coords.longitude, st.box_lat, st.box_lng);
     const away = d > st.geo_radius_m + Math.min(p.coords.accuracy || 0, 100);
-    el.hidden = !away;
+    showAway(away);
     if (!away) return;
     const key = 'box_away_' + status.session_id;
-    let seen = false; try { seen = !!sessionStorage.getItem(key); sessionStorage.setItem(key, '1'); } catch {}
-    if (seen) return;
-    try { navigator.vibrate?.([400, 200, 400, 200, 400]); } catch {}
+    let last = 0; try { last = +sessionStorage.getItem(key) || 0; } catch {}
+    if (Date.now() - last < 5 * MIN) return;
+    try { sessionStorage.setItem(key, String(Date.now())); } catch {}
+    try { navigator.vibrate?.([500, 200, 500, 200, 500, 200, 900]); } catch {}
     if ('Notification' in window && Notification.permission === 'granted' && navigator.serviceWorker) {
-      navigator.serviceWorker.ready.then(reg => reg.showNotification('BOX: tu neesi izčekojies!', {
-        body: 'Tu esi aizbraucis no BOX, bet skaitītājs turpina skaitīt. Atgriezies un izčekojies vai sazinies ar adminu.',
-        icon: 'icons/icon-192.png', badge: 'icons/icon-192.png', tag: 'box-away', requireInteraction: true })).catch(() => {});
+      navigator.serviceWorker.ready.then(reg => reg.showNotification('🚨 BOX: tu neesi izčekojies!', {
+        body: awayText(), icon: 'icons/icon-192.png', badge: 'icons/icon-192.png', tag: 'box-away', renotify: true, requireInteraction: true,
+        vibrate: [500, 200, 500, 200, 900] })).catch(() => {});
     }
   }, () => {}, { enableHighAccuracy: true, maximumAge: 30000, timeout: 20000 });
 }
@@ -333,13 +345,14 @@ async function viewHome(q) {
       ${isAdmin() ? `<a class="btn sm ghost block" href="#/admin/hold" style="margin-top:8px">⏸ Uzlikt HOLD</a>` : ''}</div>`;
   } else if (mine) {
     statusHtml = `<div class="status mine">
-      <div id="away" class="alert-away" hidden>🚨 Tu esi aizbraucis no BOX neizčekojies! Skaitītājs turpina skaitīt stundas. Atgriezies BOX un izčekojies vai sazinies ar adminu.${contactButtons(adminPhone)}</div>
+      <div id="away" class="alert-away" hidden>🚨 ${esc(awayText())} Ja nevari atgriezties — uzreiz sazinies ar adminu.${contactButtons(adminPhone)}</div>
       <div class="lbl">BOX AIZŅEMTS · TU STRĀDĀ</div>
       <div class="muted small">Iečekojies ${fTime(status.checked_in_at)}${status.booking_ends ? ` · rezervēts līdz ${fTime(status.booking_ends)}` : ''}</div>
       <div class="timer" id="tm">—</div><div id="tc" class="muted"></div>
       <div id="over" class="err"></div>
       ${status.reported_by ? `<div class="err">⚠ ${esc(status.reported_by)} ziņoja (${fDT(status.reported_at)}), ka BOX nav atbrīvots. Laiks skaitās no tavas iečekošanās. Atbrīvo BOX un izčekojies uz vietas. Ja ziņojums ir kļūdains — sazinies ar administratoru.</div>` : ''}
-      <div class="sp"></div><button class="btn red block lg" id="cout">Izčekoties un beigt</button></div>`;
+      <div class="sp"></div><button class="btn red block lg" id="cout">${state.settings.photo_required ? '📸 Nofotografēt tukšu BOX un izčekoties' : 'Izčekoties un beigt'}</button>
+      ${state.settings.photo_required ? '<div class="small" style="margin-top:8px">Izčekošanās notiek ar foto: kad auto ir izbraukts un BOX sakopts, nofotografē BOX telpu.</div>' : ''}</div>`;
   } else {
     statusHtml = `<div class="status busy"><div class="lbl">BOX STATUSS</div><div class="big">AIZŅEMTS</div>
       <div><b>${esc(status.full_name)}</b>${status.car ? ` · ${esc(status.car)}` : ''}</div>
@@ -394,11 +407,12 @@ async function viewHome(q) {
     }
     let photo = null;
     if (st.photo_required) {
-      photo = await takePhoto('Izčekošanās: nofotografē BOX', 'Nofotografē sakoptu BOX bez auto. Foto redzēs admins un nākamais lietotājs.', 'Izčekoties');
+      photo = await takePhoto('Izčekošanās: nofotografē tukšu BOX', 'Auto jābūt izbrauktam un BOX sakoptam. Nofotografē BOX telpu tā, lai redzama grīda un pacēlājs. Tiklīdz foto uzņemts, tu esi izčekots. Foto redzēs admins un nākamais lietotājs.', 'Nofotografēt un izčekoties');
       if (!photo) return;
     } else if (!(await confirmBox('Beigt darbu un izčekoties no BOX?', 'Izčekoties', 'red'))) return;
     const s = await run(() => api.checkOut(null, pos, photo));
-    modal(`<h3>Paldies! BOX atbrīvots</h3><p>Laiks: <b>${fDur(s.minutes)}</b>${s.billed_minutes !== s.minutes ? ` → aprēķinam <b>${fDur(s.billed_minutes)}</b>` : ''}<br>
+    stopAway();
+    modal(`<h3>✅ Izčekots. Paldies!</h3>${photo ? `<img class="photo" src="${photo}" alt="BOX foto" style="max-height:32vh;margin-bottom:10px">` : ''}<p>Laiks: <b>${fDur(s.minutes)}</b>${s.billed_minutes !== s.minutes ? ` → aprēķinam <b>${fDur(s.billed_minutes)}</b>` : ''}<br>
       Summa: <b class="money">${fEur(s.amount)}</b></p><p class="muted small">Likme ${rateText()}. Summa pievienota tavam uzkrājumam.</p>
       <button class="btn primary block" data-close>Labi</button>`);
     viewHome();
@@ -412,6 +426,7 @@ async function viewHome(q) {
     await run(() => api.cancelBooking(+b.dataset.cancel), 'Rezervācija atcelta'); viewHome();
   });
 
+  if (!mine) stopAway();
   if (mine) {
     watchAway(status);
     const tick = () => {
@@ -614,7 +629,7 @@ async function viewAccount() {
       <div class="sp"></div><button class="btn primary block">Saglabāt</button></form></div>
     <button class="btn ghost block" id="rules">📋 BOX noteikumi</button><div class="sp"></div>
     <button class="btn ghost block" id="out">Iziet no konta</button>
-    <p class="center muted small">BOX v1.4</p>`;
+    <p class="center muted small">BOX v1.5</p>`;
   main.querySelector('#rules').onclick = () => {
     const r = state.rules;
     modal(`<h3>BOX noteikumi</h3><div class="rules">${rulesHtml(r.body)}</div>
@@ -625,7 +640,7 @@ async function viewAccount() {
     e.preventDefault(); const d = Object.fromEntries(new FormData(e.target));
     await run(() => api.updateMyProfile(d), 'Saglabāts'); Object.assign(state.session.profile, d);
   };
-  main.querySelector('#out').onclick = async () => { await api.signOut(); state.session = null; location.hash = '#/'; boot(); };
+  main.querySelector('#out').onclick = async () => { stopAway(); await api.signOut(); state.session = null; location.hash = '#/'; boot(); };
 }
 
 // ===================================================================
@@ -856,7 +871,7 @@ async function adSettings(el) {
     const w = window.open('', '_blank');
     w.document.write(`<html><head><title>BOX QR</title><style>body{font-family:Arial;text-align:center;padding:30px}svg{width:340px;height:340px}h1{font-size:42px;margin:0}p{font-size:20px}.c{font:700 36px monospace;letter-spacing:6px}</style></head>
       <body><h1>BOX</h1><p>Iečekošanās</p>${el.querySelector('#qr').innerHTML}<p class="c">${s.checkin_code}</p>
-      <p>Atver aplikāciju BOX → <b>Iečekoties</b> → skenē šo kodu.<br>Beidzot darbu — <b>Izčekoties</b> un nofotografē sakoptu BOX.<br>Likme ${rateText()}.</p>
+      <p>Atver aplikāciju BOX → <b>Iečekoties</b> → skenē šo kodu.<br><b>Beidzot darbu:</b> izbrauc auto, sakop BOX un aplikācijā <b>nofotografē tukšu BOX</b> — tā tu izčekojies.<br>Kamēr nav foto, laiks turpina skaitīties!<br>Likme ${rateText()}.</p>
       <script>setTimeout(()=>print(),400)<\/script></body></html>`);
     w.document.close();
   };

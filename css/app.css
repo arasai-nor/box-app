@@ -184,3 +184,23 @@ img.thumb { width: 84px; height: 84px; border-radius: 14px; object-fit: cover; c
 a.card.warn { display: block; background: #fff4d6; color: #5c4200; text-decoration: none; border: 2px solid #f2b632; }
 .btn.ph { padding: 2px 8px; min-height: 0; }
 [hidden] { display: none !important; }
+
+/* ===== v1.5: lielāki burti vieglai lasīšanai telefonā ===== */
+html, body { font-size: 18px; line-height: 1.5; }
+.small { font-size: 15.5px; }
+h2 { font-size: 27px; } h3 { font-size: 20px; }
+.topbar .who { font-size: 15px; } .demo-band { font-size: 14px; }
+.nav a { font-size: 12.5px; } .nav a .ic { font-size: 23px; }
+.btn { font-size: 17px; } .btn.lg { font-size: 20px; } .btn.sm { font-size: 15.5px; }
+label { font-size: 15.5px; } input, select, textarea { font-size: 18px; }
+.err { font-size: 16px; } .badge { font-size: 14px; }
+table { font-size: 15.5px; } th { font-size: 14px; }
+.kpi { font-size: 30px; } .kpi-l { font-size: 14.5px; }
+.day .dw { font-size: 13px; } .day .dn { font-size: 21px; }
+.tl-hour { font-size: 13px; } .tl-b { font-size: 15px; }
+.modal h3 { font-size: 22px; } .tabs a { font-size: 16px; }
+.status .lbl { font-size: 15px; } .toast { font-size: 17px; }
+.rules p { font-size: 19px; line-height: 1.5; margin-bottom: 14px; }
+.alert-away { font-size: 18px; line-height: 1.4; }
+a.awaybar { position: fixed; top: 0; left: 0; right: 0; z-index: 80; display: block; padding: calc(12px + env(safe-area-inset-top, 0px)) 16px 12px; background: var(--red); color: #fff;
+  font-size: 17px; font-weight: 700; line-height: 1.35; text-decoration: none; box-shadow: 0 6px 20px rgba(0,0,0,.35); animation: boxpulse 1.2s infinite; }

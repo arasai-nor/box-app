@@ -1,4 +1,4 @@
-# BOX aplikācija — funkcionālā specifikācija (v1.4, 22.11.2026)
+# BOX aplikācija — funkcionālā specifikācija (v1.5, 22.11.2026)
 
 **Admins:** Aras Noreika · **Kods:** GitHub `arasai-nor/box-app`
 
@@ -48,8 +48,16 @@
 - **Norēķini ar darbu** — bez cenrāža: par katru darbu (granulas, sniegs, lapas, renes, saules paneļi u.c.) un tā summu admins ar dalībnieku vienojas atsevišķi; darbi notiek ārpus darba laika. Admins ieraksta aprakstu un summu brīvā formā (Admins → Norēķini → "Darbs pēc vienošanās").
 - **Atgādinājums** — ja uzkrāts vismaz 30 € (`debt_warn_eur`), dalībnieks sākuma ekrānā redz atgādinājumu norēķināties. Ja nenokārto — admins var slēgt piekļuvi. Ieturēšana no algas aplikācijā nav paredzēta: tai vajadzīgs dalībnieka rakstveida iesniegums par konkrētu summu (saskaņot ar grāmatvedi).
 - **Ielūgumi** — admins ieraksta vārdu, uzvārdu un (pēc izvēles) telefonu; saiti nosūta ar WhatsApp vai SMS.
-- **Noteikumi** — atjaunoti (15 punkti), sk. `docs/BOX_lietosanas_noteikumi_projekts.md`.
+- **Noteikumi** — atjaunoti, sk. `docs/BOX_lietosanas_noteikumi_projekts.md`.
 - **Nav iekļauts:** admina vietnieks, darbu cenrādis, "paziņot, kad atbrīvojas".
+
+### Papildinājumi v1.5 (22.11.2026)
+
+- **Lielāki burti** visā aplikācijā vieglai lasīšanai telefonā.
+- **Izčekošanās = foto:** tiklīdz dalībnieks nofotografē tukšu BOX, izčekošanās notiek automātiski (bez papildu apstiprinājuma). Foto var uzņemt tikai ar aplikācijas kameru, uz vietas (GPS), no sava konta; galerijas vai atsūtītu bildi izmantot nevar.
+- **Brīdinājums par aizbraukšanu:** ja dalībnieks ir iečekots un atrodas tālāk par atļauto rādiusu (250 m), visos aplikācijas skatos parādās sarkans brīdinājums ar vibrāciju un paziņojumu, kas atkārtojas ik pēc 5 minūtēm. Darbojas, kamēr aplikācija ir atvērta. Kad aplikācija aizvērta: servera atgādinājumi pēc laika (2. posms, pēc Supabase); brīdinājums tieši pēc attāluma fonā iespējams tikai ar instalējamu (native) aplikāciju.
+- **Noteikumi** — 16 punkti; skaidri nodalīts: iečekošanās ar QR kodu, izčekošanās ar fotogrāfiju.
+- Jaunās versijas ielāde bez pārlūka keša aizkavēšanās.
 
 ## 3. Drošība
 Lietotājs redz tikai savas sesijas un savu kontu, bet kalendārā visu vārdus un laikus. BOX kods un iekārtu iestatījumi redzami tikai adminam. Paroles glabā Supabase Auth.
