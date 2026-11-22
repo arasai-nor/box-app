@@ -1,6 +1,6 @@
 // BOX — galvenā aplikācijas loģika (bez ietvariem, darbojas tieši pārlūkā)
 import { CONFIG } from './config.js';
-import { createDemoApi } from './api-demo.js';
+import { createDemoApi, billMinutes } from './api-demo.js';
 
 const api = CONFIG.SUPABASE_URL
   ? (await import('./api-supabase.js')).createSupabaseApi(CONFIG)
@@ -77,8 +77,8 @@ function timeOptions(sel) {
 }
 const toDate = (day, hhmm) => { const [h, m] = hhmm.split(':').map(Number); const d = new Date(day + 'T00:00:00'); d.setMinutes(h * 60 + m); return d; };
 function estCost(minutes) {
-  const s = state.settings || { hourly_rate: 2, min_minutes: 60 };
-  return Math.max(minutes, s.min_minutes) / 60 * s.hourly_rate;
+  const s = state.settings || { hourly_rate: 2, min_minutes: 60, bill_step_minutes: 30, bill_round_down_minutes: 15 };
+  return billMinutes(Math.max(1, Math.floor(minutes)), s) / 60 * s.hourly_rate;
 }
 function parseHash() {
   const [path, qs] = location.hash.replace(/^#/, '').split('?');
@@ -94,7 +94,53 @@ function distanceM(lat1, lng1, lat2, lng2) {
   return 2 * 6371000 * Math.asin(Math.sqrt(a));
 }
 const telHref = p => 'tel:' + String(p || '').replace(/[^\d+]/g, '');
-const waHref = p => 'https://wa.me/' + String(p || '').replace(/\D/g, '');
+const phoneDigits = p => { const d = String(p || '').replace(/\D/g, ''); return d.length === 8 ? '371' + d : d; }; // LV numurs bez valsts koda
+const waHref = p => 'https://wa.me/' + phoneDigits(p);
+const rateText = () => { const s = state.settings || {}; const mn = s.min_minutes ?? 60; return `${fEur(s.hourly_rate ?? 2)}/h, minimums ${mn % 60 === 0 ? mn / 60 + ' h' : fDur(mn)}${s.bill_step_minutes ? `, tālāk pa ${s.bill_step_minutes} min` : ''}`; };
+function showPhoto(url, caption) {
+  modal(`<h3>BOX pēc izčekošanās</h3>${url ? `<img class="photo" src="${esc(url)}" alt="BOX foto">` : '<p class="muted">Foto nav pieejams.</p>'}
+    <p class="muted small">${esc(caption || '')}</p><button class="btn primary block" data-close>Aizvērt</button>`);
+}
+// Foto tikai ar kameru uz vietas (no galerijas izvēlēties nevar). Atgriež JPEG kā data URL vai null, ja atcelts.
+function takePhoto(title, hint, okLabel) {
+  return new Promise(res => {
+    let stream = null, shot = null, done = false;
+    const stop = () => { stream?.getTracks().forEach(t => t.stop()); stream = null; };
+    modal(`<h3>${esc(title)}</h3><p class="muted small">${esc(hint)}</p>
+      <video class="scan" id="pv" playsinline muted autoplay></video><img class="photo" id="pi" hidden alt="">
+      <div class="err" id="perr"></div><div class="sp"></div>
+      <button class="btn blue block lg" id="snap" disabled>📸 Nofotografēt</button>
+      <div class="grid2" id="after" hidden><button class="btn ghost" id="redo">Pārfotografēt</button><button class="btn red" id="use">${esc(okLabel)}</button></div>
+      <div class="sp"></div><button class="btn ghost block" data-close>Atcelt</button>`,
+    (m, close, bg) => {
+      bg.addEventListener('closing', () => { stop(); if (!done) res(null); });
+      const v = m.querySelector('#pv'), img = m.querySelector('#pi'), snap = m.querySelector('#snap'), after = m.querySelector('#after'), err = m.querySelector('#perr');
+      const start = async () => {
+        try {
+          if (!navigator.mediaDevices?.getUserMedia) throw new Error('šī ierīce neatbalsta kameru pārlūkā');
+          stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 } }, audio: false });
+          v.srcObject = stream; await v.play(); snap.disabled = false; err.textContent = '';
+        } catch (e) {
+          err.textContent = 'Kamera nav pieejama (' + (e.name === 'NotAllowedError' ? 'atļauj aplikācijai piekļuvi kamerai telefona iestatījumos' : e.message) + '). Ja neizdodas — sazinies ar adminu, viņš var tevi izčekot.';
+        }
+      };
+      snap.onclick = () => {
+        if (!v.videoWidth) return;
+        const k = Math.min(1, (api.demo ? 640 : 1280) / v.videoWidth), c = document.createElement('canvas');
+        c.width = Math.round(v.videoWidth * k); c.height = Math.round(v.videoHeight * k);
+        const x = c.getContext('2d'); x.drawImage(v, 0, 0, c.width, c.height);
+        const label = `BOX · ${me().full_name} · ${fDate(new Date())} ${fTime(new Date())}`, fs = Math.max(14, Math.round(c.width / 36));
+        x.font = `600 ${fs}px sans-serif`; x.fillStyle = 'rgba(0,0,0,.55)'; x.fillRect(0, c.height - fs * 1.9, c.width, fs * 1.9);
+        x.fillStyle = '#fff'; x.fillText(label, fs * .6, c.height - fs * .6);
+        shot = c.toDataURL('image/jpeg', api.demo ? 0.6 : 0.78);
+        img.src = shot; img.hidden = false; v.hidden = true; stop(); snap.hidden = true; after.hidden = false;
+      };
+      m.querySelector('#redo').onclick = () => { shot = null; img.hidden = true; v.hidden = false; snap.hidden = false; snap.disabled = true; after.hidden = true; start(); };
+      m.querySelector('#use').onclick = () => { if (!shot) return; done = true; res(shot); close(); };
+      start();
+    });
+  });
+}
 function contactButtons(phone) {
   if (!phone) return '';
   return `<div class="grid2" style="margin-top:10px"><a class="btn ghost" href="${telHref(phone)}">📞 Zvanīt</a>
@@ -250,13 +296,19 @@ function viewRules() {
 async function viewHome(q) {
   const main = shell('', '<div class="loading">Ielādē…</div>');
   const now = new Date();
-  const [status, todays, upcoming, , hold] = await Promise.all([
+  const [status, todays, upcoming, , hold, last, issuesAll, bal] = await Promise.all([
     api.boxStatus(),
     api.listBookings(startOfDay(now).toISOString(), addDays(startOfDay(now), 1).toISOString()),
     api.listBookings(now.toISOString(), addDays(now, 60).toISOString()),
     api.getSettings().then(s => { state.settings = s; }),
     api.boxHold(),
+    api.lastCheckout().catch(() => null),
+    api.listIssues().catch(() => []),
+    api.balances().catch(() => []),
   ]);
+  const issues = issuesAll.filter(i => i.status === 'open');
+  const myBal = bal.find(b => b.user_id === me().id), owed = myBal ? +myBal.balance + +(myBal.pending || 0) : 0;
+  const warnAt = +state.settings.debt_warn_eur || 0;
   const mine = status && status.user_id === me().id;
   let adminPhone = '';
   if (mine) { try { adminPhone = (await api.listProfiles()).find(p => p.role === 'admin' && p.active && p.phone && p.id !== me().id)?.phone || ''; } catch {} }
@@ -298,6 +350,11 @@ async function viewHome(q) {
 
   main.innerHTML = `
     ${statusHtml}
+    ${warnAt && owed >= warnAt ? `<a class="card warn" href="#/konts"><b>💶 Tev uzkrāti ${fEur(owed)}</b><br><span class="small">Laiks norēķināties — vienojies ar adminu par darbu vai samaksu.</span></a>` : ''}
+    ${!status && !hold && last ? `<div class="card"><h3>Pēdējā lietošana</h3><div class="row"><div class="grow"><b>${esc(last.full_name)}</b><br>
+        <span class="muted small">izčekojās ${fDT(last.checked_out_at)}${last.by_admin ? ' (izčekoja admins)' : ''}</span></div>
+        ${last.photo_url ? `<img class="thumb" id="lastph" src="${esc(last.photo_url)}" alt="BOX foto">` : '<span class="badge">bez foto</span>'}</div>
+        <p class="muted small" style="margin-bottom:0">Šādu BOX atstāja iepriekšējais lietotājs. Ja atrodi citādu — ziņo.</p></div>` : ''}
     ${!standalone() ? `<div class="card flat small">📲 <b>Instalē BOX uz telefona:</b> iPhone — Safari ⇧ <i>Kopīgot</i> → <i>Pievienot sākuma ekrānam</i>. Android — Chrome ⋮ → <i>Instalēt lietotni</i>.</div>` : ''}
     <div class="card"><div class="row"><h3 class="grow">Manas rezervācijas</h3><a class="btn sm primary" href="#/kalendars?new=1">+ Rezervēt</a></div>
       ${myNext.length ? `<ul class="list">${myNext.slice(0, 5).map(b => `<li class="row"><div class="grow"><b>${fDay(b.starts_at)}</b><br>
@@ -307,6 +364,9 @@ async function viewHome(q) {
     <div class="card"><h3>Šodien BOX</h3>
       ${todays.length ? `<ul class="list">${todays.map(b => `<li class="row"><div class="grow">${fTime(b.starts_at)}–${fTime(b.ends_at)} · <b>${esc(b.full_name)}</b></div>
         ${b.status === 'completed' ? '<span class="badge">beigts</span>' : ''}</li>`).join('')}</ul>` : `<p class="muted small">Šodien nav rezervāciju.</p>`}</div>
+    <div class="card"><div class="row"><h3 class="grow">🔧 Bojājumi un trūkumi</h3><button class="btn sm ghost" id="iss">+ Ziņot</button></div>
+      ${issues.length ? `<ul class="list">${issues.map(i => `<li><b>${esc(i.body)}</b><br><span class="muted small">${esc(i.full_name)} · ${fDT(i.created_at)}</span></li>`).join('')}</ul>`
+        : '<p class="muted small" style="margin:0">Nav zināmu bojājumu. Ja kaut kas ir salūzis vai trūkst — ziņo uzreiz.</p>'}</div>
     <div class="card disabled-card"><h3>📹 Video novērošana</h3><p class="muted small" style="margin:0">BOX statuss no kamerām — tiks pieslēgts nākamajā posmā.</p></div>`;
 
   main.querySelector('#cin')?.addEventListener('click', () => openCheckIn());
@@ -318,11 +378,28 @@ async function viewHome(q) {
       <button class="btn primary block" data-close>Labi</button>`);
     viewHome();
   });
+  main.querySelector('#lastph')?.addEventListener('click', () => showPhoto(last.photo_url, `${last.full_name} · ${fDT(last.checked_out_at)}`));
+  main.querySelector('#iss').onclick = () => modal(`<h3>Ziņot par bojājumu</h3><p class="muted small">Kas ir salūzis, nolietojies vai trūkst? To redzēs admins un visi dalībnieki.</p>
+    <textarea id="it" rows="3" maxlength="300" placeholder="piem. pacēlāja labā ķepa nefiksējas / trūkst 17 mm atslēgas"></textarea><div class="err" id="err"></div>
+    <div class="grid2" style="margin-top:14px"><button class="btn ghost" data-close>Atcelt</button><button class="btn primary" id="ok">Nosūtīt</button></div>`,
+    (m, close) => { m.querySelector('#ok').onclick = async () => {
+      try { await api.addIssue(m.querySelector('#it').value); close(); toast('Paldies! Ziņojums saglabāts'); viewHome(); }
+      catch (x) { m.querySelector('#err').textContent = x.message; } }; });
   main.querySelector('#cout')?.addEventListener('click', async () => {
-    if (!(await confirmBox('Beigt darbu un izčekoties no BOX?', 'Izčekoties', 'red'))) return;
-    const s = await run(async () => api.checkOut(null, await getPosition()));
-    modal(`<h3>Paldies! BOX atbrīvots</h3><p>Laiks: <b>${fDur(s.minutes)}</b>${s.billed_minutes > s.minutes ? ` (aprēķinam ${fDur(s.billed_minutes)} — minimums)` : ''}<br>
-      Summa: <b class="money">${fEur(s.amount)}</b></p><p class="muted small">Summa pievienota tavam šī mēneša aprēķinam.</p>
+    const st = state.settings;
+    const pos = await run(() => getPosition());
+    if (pos && st.box_lat != null) {
+      const d = distanceM(pos.lat, pos.lng, st.box_lat, st.box_lng);
+      if (d > st.geo_radius_m + Math.min(pos.acc || 0, 100)) return toast(`Tu neesi pie BOX (attālums ~${Math.round(d)} m) — izčekoties var tikai uz vietas`, true);
+    }
+    let photo = null;
+    if (st.photo_required) {
+      photo = await takePhoto('Izčekošanās: nofotografē BOX', 'Nofotografē sakoptu BOX bez auto. Foto redzēs admins un nākamais lietotājs.', 'Izčekoties');
+      if (!photo) return;
+    } else if (!(await confirmBox('Beigt darbu un izčekoties no BOX?', 'Izčekoties', 'red'))) return;
+    const s = await run(() => api.checkOut(null, pos, photo));
+    modal(`<h3>Paldies! BOX atbrīvots</h3><p>Laiks: <b>${fDur(s.minutes)}</b>${s.billed_minutes !== s.minutes ? ` → aprēķinam <b>${fDur(s.billed_minutes)}</b>` : ''}<br>
+      Summa: <b class="money">${fEur(s.amount)}</b></p><p class="muted small">Likme ${rateText()}. Summa pievienota tavam uzkrājumam.</p>
       <button class="btn primary block" data-close>Labi</button>`);
     viewHome();
   });
@@ -341,7 +418,7 @@ async function viewHome(q) {
       const m = (Date.now() - new Date(status.checked_in_at)) / MIN;
       const el = document.getElementById('tm'); if (!el) return;
       el.textContent = `${pad(Math.floor(m / 60))}:${pad(Math.floor(m % 60))}`;
-      document.getElementById('tc').textContent = `Pašreizējā summa: ${fEur(estCost(Math.ceil(m)))} (min. ${state.settings.min_minutes} min)`;
+      document.getElementById('tc').textContent = `Pašreizējā summa: ${fEur(estCost(m))} (${rateText()})`;
       const over = !status.reported_by && status.booking_ends && Date.now() > new Date(status.booking_ends);
       const ov = document.getElementById('over');
       if (ov) ov.textContent = over ? '⚠ Rezervētais laiks beidzies — pabeidz darbu vai pagarini rezervāciju kalendārā.' : '';
@@ -488,7 +565,7 @@ function bookForm(day, hour, existing, after) {
       const a = toDate(m.querySelector('#d').value, m.querySelector('#s').value), b = toDate(m.querySelector('#d').value, m.querySelector('#e').value);
       const mins = (b - a) / MIN;
       m.querySelector('#est').innerHTML = mins > 0
-        ? `Ilgums: <b>${fDur(mins)}</b> · Ja izmanto visu laiku: <b>${fEur(estCost(mins))}</b><br><span class="muted">Maksā par faktisko laiku no iečekošanās līdz izčekošanās (${fEur(state.settings.hourly_rate)}/h, minimums ${state.settings.min_minutes} min).</span>`
+        ? `Ilgums: <b>${fDur(mins)}</b> · Ja izmanto visu laiku: <b>${fEur(estCost(mins))}</b><br><span class="muted">Maksā par laiku no iečekošanās līdz izčekošanās (${rateText()}).</span>`
         : `<span class="err">Beigu laikam jābūt pēc sākuma</span>`;
     };
     m.querySelectorAll('input,select').forEach(x => x.oninput = upd); upd();
@@ -506,21 +583,21 @@ function bookForm(day, hour, existing, after) {
 // ===================================================================
 async function viewAccount() {
   const main = shell('konts', '<div class="loading">Ielādē…</div>');
-  const [sessions, ledger] = await Promise.all([api.mySessions(), api.myLedger()]);
+  const [sessions, ledger, bal] = await Promise.all([api.mySessions(), api.myLedger(), api.balances()]);
   const now = new Date(); const [mf] = monthRange(now.getFullYear(), now.getMonth());
   const thisMonth = sessions.filter(s => s.checked_out_at && new Date(s.checked_out_at) >= mf);
   const tmMin = thisMonth.reduce((a, s) => a + s.billed_minutes, 0), tmEur = thisMonth.reduce((a, s) => a + +s.amount, 0);
-  const balance = ledger.reduce((a, l) => a + +l.amount, 0);
-  const kindLv = { usage: 'Lietošana', work: 'Darbs BOX labā', cash: 'Skaidra nauda', adjustment: 'Korekcija', hold: 'HOLD' };
+  const balance = ledger.reduce((a, l) => a + +l.amount, 0) + +(bal.find(b => b.user_id === me().id)?.pending || 0);
+  const kindLv = { usage: 'Lietošana', work: 'Darbs pēc vienošanās', cash: 'Skaidra nauda', adjustment: 'Korekcija', hold: 'HOLD' };
   const p = me();
   main.innerHTML = `
     <h2>Mans konts</h2>
     <div class="grid2">
-      <div class="card"><div class="kpi-l">Šomēnes (${MON[now.getMonth()]})</div><div class="kpi">${fEur(tmEur)}</div><div class="small muted">${fDur(tmMin)} · ${thisMonth.length} reizes</div></div>
-      <div class="card"><div class="kpi-l">${balance > 0.004 ? 'Uzkrātais parāds BOX kasei' : balance < -0.004 ? 'Priekšā samaksāts' : 'Atlikums'}</div>
-        <div class="kpi" style="color:${balance > 0.004 ? 'var(--red)' : 'var(--green)'}">${fEur(Math.abs(balance))}</div><div class="small muted">par slēgtajiem mēnešiem</div></div>
+      <div class="card"><div class="kpi-l">${balance < -0.004 ? 'Priekšā nopelnīts' : 'Uzkrāts kopā'}</div>
+        <div class="kpi" style="color:${balance > 0.004 ? 'var(--red)' : 'var(--green)'}">${fEur(Math.abs(balance))}</div><div class="small muted">${balance > 0.004 ? 'jānokārto ar darbu vai naudu' : 'viss nokārtots'}</div></div>
+      <div class="card"><div class="kpi-l">t.sk. šomēnes (${MON[now.getMonth()]})</div><div class="kpi">${fEur(tmEur)}</div><div class="small muted">${fDur(tmMin)} · ${thisMonth.length} reizes</div></div>
     </div>
-    <p class="muted small">Šī mēneša summa tiek pievienota atlikumam nākamā mēneša 1. datumā. Norēķinu (ar darbu vai naudu) saskaņo ar administratoru.</p>
+    <p class="muted small">Uzkrāto summu dzēš ar papildu darbiem ārpus darba laika vai ar naudu — par katru reizi vienojies ar adminu. Likme: ${rateText()}.</p>
     <div class="card"><h3>Lietošanas vēsture</h3>
       ${sessions.length ? `<table><tr><th>Datums</th><th>Laiks</th><th class="num">Ilgums</th><th class="num">€</th></tr>
         ${sessions.map(s => `<tr><td>${fDate(s.checked_in_at)}</td><td>${fTime(s.checked_in_at)}–${s.checked_out_at ? fTime(s.checked_out_at) : '<span class="badge blue">tagad</span>'}</td>
@@ -537,7 +614,7 @@ async function viewAccount() {
       <div class="sp"></div><button class="btn primary block">Saglabāt</button></form></div>
     <button class="btn ghost block" id="rules">📋 BOX noteikumi</button><div class="sp"></div>
     <button class="btn ghost block" id="out">Iziet no konta</button>
-    <p class="center muted small">BOX v1.3</p>`;
+    <p class="center muted small">BOX v1.4</p>`;
   main.querySelector('#rules').onclick = () => {
     const r = state.rules;
     modal(`<h3>BOX noteikumi</h3><div class="rules">${rulesHtml(r.body)}</div>
@@ -607,7 +684,7 @@ async function viewAdmin(sub, q) {
 
 async function adUsers(el) {
   const [users, bal] = await Promise.all([api.listProfiles(), api.balances()]);
-  const b = Object.fromEntries(bal.map(x => [x.user_id, +x.balance]));
+  const b = Object.fromEntries(bal.map(x => [x.user_id, +x.balance + +(x.pending || 0)]));
   const cur = users.filter(u => !u.removed_at), gone = users.filter(u => u.removed_at);
   const row = u => `<li>
       <div class="row"><div class="grow"><b>${esc(u.full_name)}</b> ${u.role === 'admin' ? '<span class="badge amber">admins</span>' : ''}
@@ -622,7 +699,7 @@ async function adUsers(el) {
     </li>`;
   el.innerHTML = `<a class="btn primary block" href="#/admin/ieluigumi" style="margin-bottom:12px">+ Pievienot dalībnieku</a>
     <div class="card"><h3>Dalībnieki (${cur.length})</h3><ul class="list">${cur.map(row).join('')}</ul>
-      <p class="muted small">Summa labajā pusē — uzkrātais parāds BOX kasei par slēgtajiem mēnešiem.</p></div>
+      <p class="muted small">Summa labajā pusē — katra dalībnieka uzkrātā summa (ieskaitot šo mēnesi).</p></div>
     ${gone.length ? `<div class="card"><h3>Izslēgtie (${gone.length})</h3><ul class="list">${gone.map(row).join('')}</ul>
       <p class="muted small">Izslēgtais dalībnieks savā aplikācijā redz paziņojumu, ka vairs nav BOX dalībnieks. Viņa vēsture un atlikums saglabājas.</p></div>` : ''}`;
   el.querySelectorAll('[data-act]').forEach(x => x.onclick = async () => { await run(() => api.updateProfile(x.dataset.act, { active: true }), 'Aktivizēts'); adUsers(el); });
@@ -640,17 +717,21 @@ async function adUsers(el) {
 async function adInvites(el) {
   const list = await api.listInvites();
   const link = c => `${appUrl()}#/login?code=${c}`;
-  const waText = (c, n) => `Sveiks${n ? ', ' + n : ''}! 🔧 Šeit tavs personīgais ielūgums BOX garāžas aplikācijā (rezervācija un uzskaite).\n\n1) Atver saiti: ${link(c)}\n2) Reģistrējies (kods jau ievadīts: ${c})\n3) Pievieno aplikāciju telefona sākuma ekrānam:\n   iPhone — Safari ⇧ Kopīgot → Pievienot sākuma ekrānam\n   Android — Chrome ⋮ → Instalēt lietotni\n\nLikme 2 €/h par faktisko lietošanas laiku (min. 1 h). Ar cieņu, Aras`;
+  const waText = (c, n) => `Sveiks${n ? ', ' + n : ''}! 🔧 Šeit tavs personīgais ielūgums BOX garāžas aplikācijā (rezervācija un uzskaite).\n\n1) Atver saiti: ${link(c)}\n2) Reģistrējies (kods jau ievadīts: ${c})\n3) Izlasi un apstiprini BOX noteikumus\n4) Pievieno aplikāciju telefona sākuma ekrānam:\n   iPhone — Safari ⇧ Kopīgot → Pievienot sākuma ekrānam\n   Android — Chrome ⋮ → Instalēt lietotni\n\nLikme ${rateText()}. Ar cieņu, ${me().full_name.split(' ')[0]}`;
+  const smsText = c => `BOX garāžas aplikācija — tavs ielūgums: ${link(c)} (kods ${c}). Reģistrējies un apstiprini noteikumus. ${me().full_name.split(' ')[0]}`;
   el.innerHTML = `<div class="card"><h3>Pievienot dalībnieku</h3>
-    <p class="muted small">Katram cilvēkam savs vienreizējs kods. Pēc izveides nospied <b>Sūtīt WhatsApp</b> — atvērsies WhatsApp ar gatavu ziņu.</p>
-    <form id="f" class="row"><input class="grow" name="note" placeholder="Vārds, uzvārds" required><button class="btn primary">Izveidot</button></form></div>
+    <p class="muted small">Ieraksti vārdu un uzvārdu — tiks izveidots personīgs vienreizējs kods. Pēc tam nospied <b>WhatsApp</b> vai <b>SMS</b>, un atvērsies gatava ziņa ar saiti. Ja ieraksti arī telefonu, ziņa atvērsies uzreiz šim cilvēkam.</p>
+    <form id="f"><label>Vārds, uzvārds</label><input name="note" placeholder="Vārds, uzvārds" required>
+      <label>Telefons (nav obligāti)</label><input name="phone" type="tel" placeholder="piem. 29123456">
+      <div class="sp"></div><button class="btn primary block">Izveidot ielūgumu</button></form></div>
     <div class="card"><h3>Ielūgumi</h3>${list.length ? `<ul class="list">${list.map(i => `<li><div class="row"><div class="grow"><b>${esc(i.note || '—')}</b> <span class="code" style="font-size:15px;letter-spacing:1px">${i.code}</span><br>
-        ${i.used_by ? `<span class="badge green">izmantots: ${esc(i.used?.full_name || '')}</span>` : '<span class="badge amber">gaida reģistrāciju</span>'}</div></div>
-        ${!i.used_by ? `<div class="row" style="margin-top:6px;gap:6px">
-          <a class="btn sm wa" target="_blank" href="https://wa.me/?text=${encodeURIComponent(waText(i.code, i.note))}">Sūtīt WhatsApp</a>
+        ${i.used_by ? `<span class="badge green">izmantots: ${esc(i.used?.full_name || '')}</span>` : `<span class="badge amber">gaida reģistrāciju</span>${i.phone ? ` <span class="small muted">${esc(i.phone)}</span>` : ''}`}</div></div>
+        ${!i.used_by ? `<div class="row" style="margin-top:6px;gap:6px;flex-wrap:wrap">
+          <a class="btn sm wa" target="_blank" rel="noopener" href="https://wa.me/${i.phone ? phoneDigits(i.phone) : ''}?text=${encodeURIComponent(waText(i.code, i.note))}">WhatsApp</a>
+          <a class="btn sm blue" href="sms:${i.phone ? esc(String(i.phone).replace(/[^\d+]/g, '')) : ''}?&body=${encodeURIComponent(smsText(i.code))}">SMS</a>
           <button class="btn sm ghost" data-copy="${i.code}">Kopēt saiti</button><button class="btn sm ghost" data-del="${i.code}">Dzēst</button></div>` : ''}</li>`).join('')}</ul>`
       : '<p class="muted small">Vēl nav ielūgumu.</p>'}</div>`;
-  el.querySelector('#f').onsubmit = async e => { e.preventDefault(); await run(() => api.createInvite(e.target.note.value.trim()), 'Ielūgums izveidots'); adInvites(el); };
+  el.querySelector('#f').onsubmit = async e => { e.preventDefault(); await run(() => api.createInvite(e.target.note.value.trim(), e.target.phone.value.trim() || null), 'Ielūgums izveidots'); adInvites(el); };
   el.querySelectorAll('[data-copy]').forEach(b => b.onclick = async () => { await navigator.clipboard.writeText(link(b.dataset.copy)).catch(() => {}); toast('Saite nokopēta'); });
   el.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => { await run(() => api.deleteInvite(b.dataset.del), 'Dzēsts'); adInvites(el); });
 }
@@ -681,12 +762,15 @@ async function adMonth(el, q) {
       <p class="muted small">Mēneša slēgšana pārnes katra lietotāja summu uz viņa virtuālo kontu (parādu BOX kasei). To var darīt vienreiz — atkārtota slēgšana neko nedublē.
         Automātiski tas notiek katra mēneša 1. datumā.</p></div>
     <div class="card"><h3>Visas reizes</h3>${sess.length ? `<table><tr><th>Datums</th><th>Kas</th><th>Laiks</th><th class="num">€</th></tr>
-      ${sess.map(s => `<tr><td>${fDate(s.checked_in_at)}</td><td>${esc(s.full_name)}</td><td>${fTime(s.checked_in_at)}–${s.checked_out_at ? fTime(s.checked_out_at) : '…'}${s.closed_by ? ' <span class="badge">admins</span>' : ''}</td>
-        <td class="num">${s.amount != null ? fEur(s.amount) : ''}</td></tr>`).join('')}</table>` : '<p class="muted small">—</p>'}</div>`;
+      ${sess.map(s => `<tr><td>${fDate(s.checked_in_at)}</td><td>${esc(s.full_name)}</td><td>${fTime(s.checked_in_at)}–${s.checked_out_at ? fTime(s.checked_out_at) : '…'}${s.closed_by ? ' <span class="badge">admins</span>' : ''}${s.has_photo ? ` <button class="btn sm ghost ph" data-ph="${s.id}" data-c="${esc(s.full_name)} · ${fDT(s.checked_out_at)}">📷</button>` : ''}</td>
+        <td class="num">${s.amount != null ? fEur(s.amount) : ''}</td></tr>`).join('')}</table>
+        <p class="muted small">📷 — foto, ko dalībnieks uzņēma izčekojoties.${api.demo ? ' Demo režīmā glabājas tikai pēdējie 12 foto.' : ''}</p>` : '<p class="muted small">—</p>'}</div>`;
+  el.querySelectorAll('[data-ph]').forEach(b => b.onclick = async () => showPhoto(await run(() => api.sessionPhoto(+b.dataset.ph)), b.dataset.c));
   el.querySelector('#m').onchange = e => { location.hash = `#/admin/menesis?m=${e.target.value}`; };
   el.querySelector('#fco')?.addEventListener('click', async () => {
     if (!(await confirmBox(`Izčekot ${status.full_name}?`, 'Izčekot', 'red'))) return;
-    await run(async () => api.checkOut(status.session_id, status.user_id === me().id ? await getPosition() : null), 'Izčekots'); adMonth(el, q);
+    if (status.user_id === me().id) { toast('Sevi izčeko sākuma ekrānā — tur jāuzņem foto', true); return; }
+    await run(() => api.checkOut(status.session_id), 'Izčekots'); adMonth(el, q);
   });
   el.querySelector('#close').onclick = async () => {
     if (!(await confirmBox(`Slēgt ${sel} un pārnest summas uz lietotāju kontiem?`, 'Slēgt mēnesi'))) return;
@@ -705,19 +789,21 @@ async function adMonth(el, q) {
 
 async function adPay(el) {
   const [users, bal, led] = await Promise.all([api.listProfiles(), api.balances(), api.listLedgerAll()]);
-  const kindLv = { usage: 'Lietošana', work: 'Darbs BOX labā', cash: 'Skaidra nauda', adjustment: 'Korekcija', hold: 'HOLD' };
+  const kindLv = { usage: 'Lietošana', work: 'Darbs pēc vienošanās', cash: 'Skaidra nauda', adjustment: 'Korekcija', hold: 'HOLD' };
   el.innerHTML = `
-    <div class="card"><h3>Atlikumi</h3><table><tr><th>Lietotājs</th><th class="num">Parāds BOX kasei</th></tr>
-      ${bal.map(b => `<tr><td>${esc(b.full_name)}</td><td class="num money" style="color:${+b.balance > 0 ? 'var(--red)' : 'var(--ink)'}">${fEur(b.balance)}</td></tr>`).join('')}</table></div>
+    <div class="card"><h3>Uzkrājumi</h3><table><tr><th>Dalībnieks</th><th class="num">Uzkrāts kopā</th></tr>
+      ${bal.map(b => { const t = +b.balance + +(b.pending || 0); return `<tr><td>${esc(b.full_name)}</td><td class="num money" style="color:${t > 0.004 ? 'var(--red)' : 'var(--ink)'}">${fEur(t)}</td></tr>`; }).join('')}
+      <tr><th>Kopā</th><th class="num money">${fEur(bal.reduce((a, b) => a + +b.balance + +(b.pending || 0), 0))}</th></tr></table>
+      <p class="muted small">Ieskaitot šī mēneša lietošanu. Par darbiem vienojaties katru reizi atsevišķi — ieraksti aprakstu un summu zemāk.</p></div>
     <div class="card"><h3>Reģistrēt norēķinu</h3><form id="f">
       <label>Lietotājs</label><select name="user" required>${users.map(u => `<option value="${u.id}">${esc(u.full_name)}</option>`).join('')}</select>
       <label>Veids</label><select name="kind" id="kind">
-        <option value="work">Darbs BOX labā (tīrīšana, kurināšana, remonts…)</option>
+        <option value="work">Darbs pēc vienošanās (granulas, sniegs, lapas, tīrīšana…)</option>
         <option value="cash">Skaidra nauda (nonāk kasē)</option>
         <option value="adjustment">Korekcija (+ palielina, − samazina parādu)</option></select>
       <div class="grid2"><div><label>Summa €</label><input name="amount" type="number" step="0.01" required></div>
-        <div id="hw"><label>Darba stundas</label><input name="hours" type="number" step="0.25" min="0"></div></div>
-      <label>Apraksts</label><input name="description" required placeholder="piem. BOX tīrīšana 23.11. / iemaksa skaidrā">
+        <div id="hw"><label>Darba stundas (nav obligāti)</label><input name="hours" type="number" step="0.25" min="0"></div></div>
+      <label>Apraksts</label><input name="description" required placeholder="piem. granulu papildināšana 23.11. / sniega tīrīšana">
       <div class="sp"></div><button class="btn primary block">Saglabāt</button></form></div>
     <div class="card"><h3>Pēdējās kustības</h3>${led.length ? `<ul class="list">${led.slice(0, 60).map(l => `<li class="row"><div class="grow"><b>${esc(l.full_name)}</b> · ${kindLv[l.kind]} <span class="muted small">${fDate(l.created_at)}</span><br>
       <span class="small muted">${esc(l.description || '')}</span></div><div class="money" style="color:${l.amount > 0 ? 'var(--red)' : 'var(--green)'}">${l.amount > 0 ? '+' : '−'}${fEur(Math.abs(l.amount))}</div></li>`).join('')}</ul>` : '<p class="muted small">—</p>'}</div>`;
@@ -751,6 +837,12 @@ async function adSettings(el) {
     <div class="card"><h3>Noteikumi</h3><form id="f">
       <div class="grid2"><div><label>Likme €/h</label><input name="hourly_rate" type="number" step="0.01" min="0" value="${s.hourly_rate}"></div>
         <div><label>Minimālā maksa (min)</label><input name="min_minutes" type="number" min="0" step="15" value="${s.min_minutes}"></div></div>
+      <div class="grid2"><div><label>Laika solis (min)</label><input name="bill_step_minutes" type="number" min="0" step="5" value="${s.bill_step_minutes}"></div>
+        <div><label>Uz leju noapaļo līdz (min)</label><input name="bill_round_down_minutes" type="number" min="0" step="1" value="${s.bill_round_down_minutes}"></div></div>
+      <p class="muted small">Piemērs ar 30 un 15: 1 h 15 min = 1 h; 1 h 20 min = 1 h 30 min; 1 h 47 min = 2 h.</p>
+      <div class="grid2"><div><label>Maks. rezervācijas vienam (0 = bez limita)</label><input name="max_active_bookings" type="number" min="0" step="1" value="${s.max_active_bookings}"></div>
+        <div><label>Atgādinājums, ja uzkrāts vismaz (€, 0 = nav)</label><input name="debt_warn_eur" type="number" min="0" step="1" value="${s.debt_warn_eur}"></div></div>
+      <label class="row" style="gap:8px;color:var(--ink)"><input type="checkbox" name="photo_required" style="width:auto" ${s.photo_required ? 'checked' : ''}> Izčekojoties obligāts BOX foto</label>
       <div class="grid2"><div><label>Agrākā iečekošanās pirms rezervācijas (min)</label><input name="checkin_early_minutes" type="number" min="0" value="${s.checkin_early_minutes}"></div>
         <div><label>Bez rezervācijas: BOX jābūt brīvam (min)</label><input name="walkin_minutes" type="number" min="15" step="15" value="${s.walkin_minutes}"></div></div>
       <label class="row" style="gap:8px;color:var(--ink)"><input type="checkbox" disabled style="width:auto"> Neierašanās sods (2. posms — vēl neaktīvs)</label>
@@ -763,8 +855,8 @@ async function adSettings(el) {
   el.querySelector('#print').onclick = () => {
     const w = window.open('', '_blank');
     w.document.write(`<html><head><title>BOX QR</title><style>body{font-family:Arial;text-align:center;padding:30px}svg{width:340px;height:340px}h1{font-size:42px;margin:0}p{font-size:20px}.c{font:700 36px monospace;letter-spacing:6px}</style></head>
-      <body><h1>BOX</h1><p>Iečekošanās / izčekošanās</p>${el.querySelector('#qr').innerHTML}<p class="c">${s.checkin_code}</p>
-      <p>Atver aplikāciju BOX → <b>Iečekoties</b> → skenē šo kodu.<br>Beidzot darbu — <b>Izčekoties</b>.<br>Likme ${fEur(s.hourly_rate)}/h, min. ${s.min_minutes} min.</p>
+      <body><h1>BOX</h1><p>Iečekošanās</p>${el.querySelector('#qr').innerHTML}<p class="c">${s.checkin_code}</p>
+      <p>Atver aplikāciju BOX → <b>Iečekoties</b> → skenē šo kodu.<br>Beidzot darbu — <b>Izčekoties</b> un nofotografē sakoptu BOX.<br>Likme ${rateText()}.</p>
       <script>setTimeout(()=>print(),400)<\/script></body></html>`);
     w.document.close();
   };
@@ -787,20 +879,29 @@ async function adSettings(el) {
   };
   el.querySelector('#f').onsubmit = async e => {
     e.preventDefault(); const d = Object.fromEntries(new FormData(e.target)); for (const k in d) d[k] = +d[k];
+    d.photo_required = e.target.photo_required.checked;
     await run(() => api.updateSettings(d), 'Saglabāts'); state.settings = await api.getSettings();
   };
 }
 
 async function adReports(el) {
-  const list = await api.listReports();
+  const [list, issues] = await Promise.all([api.listReports(), api.listIssues()]);
   const st = { open: ['aktīvs — laiks skaitās', 'red'], resolved: ['atrisināts', 'green'], rejected: ['noraidīts', ''] };
-  el.innerHTML = `<div class="card"><h3>Ziņojumi "BOX nav atbrīvots"</h3>
+  el.innerHTML = `<div class="card"><h3>🔧 Bojājumi un trūkumi</h3>
+    ${issues.length ? `<ul class="list">${issues.slice(0, 40).map(i => `<li><div class="row"><div class="grow"><b>${esc(i.body)}</b> <span class="badge ${i.status === 'open' ? 'red' : 'green'}">${i.status === 'open' ? 'atvērts' : 'atrisināts'}</span><br>
+        <span class="small muted">${esc(i.full_name)} · ${fDT(i.created_at)}${i.resolved_at ? ` · atrisināts ${fDate(i.resolved_at)}${i.resolution ? ': ' + esc(i.resolution) : ''}` : ''}</span></div>
+        ${i.status === 'open' ? `<button class="btn sm primary" data-fix="${i.id}">Atrisināts</button>` : ''}</div></li>`).join('')}</ul>`
+      : '<p class="muted small">Ziņojumu nav.</p>'}</div>
+    <div class="card"><h3>Ziņojumi "BOX nav atbrīvots"</h3>
     <p class="muted small">Ja lietotājs atrod BOX aizņemtu pēc cita izčekošanās, viņš to ziņo, un iepriekšējam lietotājam laiks atkal skaitās no viņa iečekošanās brīža. Ja ziņojums ir kļūdains, nospied <b>Noraidīt</b> — tiks atjaunots sākotnējais izčekošanās laiks un summa.</p>
     ${list.length ? `<ul class="list">${list.map(r => `<li><div class="row"><div class="grow"><b>${esc(r.user_name)}</b> <span class="badge ${st[r.status][1]}">${st[r.status][0]}</span><br>
         <span class="small muted">Ziņoja ${esc(r.reporter_name)}, ${fDT(r.created_at)}${r.note ? ' · ' + esc(r.note) : ''}<br>
         Sākotnēji: ${fDT(r.checked_in_at)} – ${fTime(r.prev_checked_out_at)} · ${fEur(r.prev_amount)}</span></div>
         ${r.status !== 'rejected' ? `<button class="btn sm ghost" data-rej="${r.id}">Noraidīt</button>` : ''}</div></li>`).join('')}</ul>`
       : '<p class="muted small">Ziņojumu nav.</p>'}</div>`;
+  el.querySelectorAll('[data-fix]').forEach(b => b.onclick = () => modal(`<h3>Atzīmēt kā atrisinātu</h3><label>Piezīme (nav obligāti)</label><input id="nt" maxlength="160" placeholder="piem. nopirkta jauna atslēga">
+    <div class="grid2" style="margin-top:14px"><button class="btn ghost" data-close>Atcelt</button><button class="btn primary" id="ok">Atrisināts</button></div>`,
+    (m, close) => { m.querySelector('#ok').onclick = async () => { await run(() => api.resolveIssue(+b.dataset.fix, m.querySelector('#nt').value), 'Atzīmēts kā atrisināts'); close(); adReports(el); }; }));
   el.querySelectorAll('[data-rej]').forEach(b => b.onclick = async () => {
     if (!(await confirmBox('Noraidīt ziņojumu un atjaunot sākotnējo izčekošanās laiku un summu?', 'Noraidīt', 'red'))) return;
     await run(() => api.rejectReport(+b.dataset.rej), 'Ziņojums noraidīts'); adReports(el);

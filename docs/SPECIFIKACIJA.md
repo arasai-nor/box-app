@@ -1,4 +1,4 @@
-# BOX aplikācija — funkcionālā specifikācija (v1.3, 21.11.2026)
+# BOX aplikācija — funkcionālā specifikācija (v1.4, 22.11.2026)
 
 **Admins:** Aras Noreika · **Kods:** GitHub `arasai-nor/box-app`
 
@@ -8,7 +8,7 @@
 | # | Jautājums | Lēmums |
 |---|---|---|
 | 1 | Rezervāciju apstiprināšana | Automātiska. Pārklāšanās nav iespējama, admins var atcelt jebkuru rezervāciju |
-| 2 | Maksa | Faktiskais laiks no iečekošanās līdz izčekošanās, minimums 1 h, 2 €/h |
+| 2 | Maksa | 2 €/h par laiku no iečekošanās līdz izčekošanās; minimums 1 h, tālāk pa 30 min: atlikumu līdz 15 min (ieskaitot) noapaļo uz leju, vairāk — uz augšu (1:15 → 1:00; 1:20 → 1:30; 1:44 → 1:30; 1:47 → 2:00) |
 | 3 | Norēķini | Bez bankām. Summas krājas virtuāli. Admins reģistrē nosegšanu ar darbu BOX labā vai skaidru naudu (tā nonāk BOX kasē) |
 | 4 | Platforma | PWA: viens kods iPhone un Android, saite caur WhatsApp |
 | 5 | Shelly relejs, kameras | Vietas rezervētas, pagaidām neaktīvas |
@@ -26,7 +26,7 @@
    - ar savu rezervāciju ne agrāk kā 15 min pirms sākuma;
    - bez rezervācijas, ja BOX ir brīvs vismaz nākamo 1 h;
    - vienlaikus BOX var būt tikai viens lietotājs.
-4. **Izčekošanās:** summa = max(faktiskās min, 60) / 60 × 2 €. Ja beidz agrāk, atlikušais laiks kalendārā atbrīvojas.
+4. **Izčekošanās:** tikai uz vietas (GPS) un tikai ar BOX foto, ko aplikācija uzņem ar kameru (no galerijas izvēlēties nevar). Summa = aprēķina minūtes / 60 × 2 €, kur aprēķina minūtes = minimums 60, tālāk pa 30 min ar noapaļošanu pie 15 min. Ja beidz agrāk, atlikušais laiks kalendārā atbrīvojas. Admins var izčekot citu dalībnieku bez foto.
 5. **Pret "marinēšanu":** laiks skaitās, līdz lietotājs izčekojas. Admins var izčekot ar roku.
 6. **Mēneša slēgšana** notiek 1. datumā automātiski vai ar admina pogu. Summa nonāk lietotāja virtuālajā kontā. Dubulta slēgšana nav iespējama.
 7. **Norēķins** ar darbu vai skaidru naudu samazina parādu. Skaidrā nauda reizē tiek ierakstīta kā kases ienākums.
@@ -38,6 +38,18 @@
 13. **HOLD:** vienlaikus var būt tikai viens. Uzliekot HOLD, citu dalībnieku rezervācijas šajā laikā tiek atceltas; ja dalībnieks pats ir iečekots, viņa sesija tiek noslēgta ar parasto maksu. HOLD laikā nevar rezervēt, iečekoties un ziņot. HOLD redzams sākuma ekrānā un kalendārā ar dalībnieka vārdu, iemeslu, aptuveno beigu laiku un saziņas pogām. Beidzot HOLD, admins ieraksta summu (var būt 0), kas nonāk dalībnieka kontā.
 15. **Izslēgšana:** izslēgt nevar dalībnieku, kurš tobrīd ir iečekots vai kuram ir aktīvs HOLD. Izslēdzot tiek atceltas viņa nākotnes rezervācijas un noņemtas admina tiesības. Izslēgtais var ielogoties, bet redz tikai paziņojumu par dalības beigām un savu nenokārtoto atlikumu.
 14. **Brīdinājums par aizbraukšanu:** ja dalībnieks ir iečekots un aplikācija ir atvērta, bet telefons vairs nav BOX zonā, parādās sarkans brīdinājums ar vibrāciju un saziņu ar adminu. Kad aplikācija ir aizvērta, tīmekļa aplikācija atrašanās vietu izsekot nevar; šim gadījumam 2. posmā būs servera push atgādinājumi (pēc rezervācijas beigām un ik pēc noteikta laika, kamēr sesija ir atvērta).
+
+### Papildinājumi v1.4 (22.11.2026)
+
+- **Foto izčekojoties** — obligāts (iestatījums `photo_required`). Uz foto tiek uzdrukāts vārds, datums un laiks. Foto redz admins (Mēneša atskaite → 📷) un nākamais lietotājs sākuma ekrānā ("Pēdējā lietošana"). Glabāšana: Supabase Storage, privāta krātuve `checkout`; demo režīmā — tikai pēdējie 12 foto pārlūkā.
+- **Rezervāciju limits** — vienam dalībniekam ne vairāk kā 2 nākotnes rezervācijas (`max_active_bookings`, 0 = bez limita). Iečekošanās bez rezervācijas limitā neskaitās.
+- **Bojājumu un trūkumu žurnāls** — jebkurš dalībnieks ziņo sākuma ekrānā; atvērtos ierakstus redz visi; admins atzīmē kā atrisinātu (Admins → Ziņojumi).
+- **Uzkrājums** — katrs dalībnieks sadaļā "Mans konts" redz kopējo uzkrāto summu (slēgtie mēneši + vēl neslēgtā lietošana − nokārtotais); admins redz visus (Admins → Dalībnieki un Norēķini).
+- **Norēķini ar darbu** — bez cenrāža: par katru darbu (granulas, sniegs, lapas, renes, saules paneļi u.c.) un tā summu admins ar dalībnieku vienojas atsevišķi; darbi notiek ārpus darba laika. Admins ieraksta aprakstu un summu brīvā formā (Admins → Norēķini → "Darbs pēc vienošanās").
+- **Atgādinājums** — ja uzkrāts vismaz 30 € (`debt_warn_eur`), dalībnieks sākuma ekrānā redz atgādinājumu norēķināties. Ja nenokārto — admins var slēgt piekļuvi. Ieturēšana no algas aplikācijā nav paredzēta: tai vajadzīgs dalībnieka rakstveida iesniegums par konkrētu summu (saskaņot ar grāmatvedi).
+- **Ielūgumi** — admins ieraksta vārdu, uzvārdu un (pēc izvēles) telefonu; saiti nosūta ar WhatsApp vai SMS.
+- **Noteikumi** — atjaunoti (15 punkti), sk. `docs/BOX_lietosanas_noteikumi_projekts.md`.
+- **Nav iekļauts:** admina vietnieks, darbu cenrādis, "paziņot, kad atbrīvojas".
 
 ## 3. Drošība
 Lietotājs redz tikai savas sesijas un savu kontu, bet kalendārā visu vārdus un laikus. BOX kods un iekārtu iestatījumi redzami tikai adminam. Paroles glabā Supabase Auth.

@@ -8,6 +8,9 @@ export function createSupabaseApi(cfg) {
 
   const ok = ({ data, error }) => { if (error) throw new Error(error.message); return data; };
 
+  const signed = async path => path ? ok(await sb.storage.from('checkout').createSignedUrl(path, 3600)).signedUrl : null;
+  const withPhotoFlag = rows => rows.map(r => ({ ...r, has_photo: !!r.photo_path }));
+
   async function uid() {
     const { data } = await sb.auth.getUser();
     return data.user?.id || null;
@@ -67,8 +70,21 @@ export function createSupabaseApi(cfg) {
     async checkIn(code, pos = null) {
       return ok(await sb.rpc('check_in', { p_code: code, p_lat: pos?.lat ?? null, p_lng: pos?.lng ?? null, p_acc: pos?.acc ?? null }));
     },
-    async checkOut(sessionId = null, pos = null) {
-      return ok(await sb.rpc('check_out', { p_session: sessionId, p_lat: pos?.lat ?? null, p_lng: pos?.lng ?? null, p_acc: pos?.acc ?? null }));
+    async checkOut(sessionId = null, pos = null, photo = null) {
+      let path = null;
+      if (photo) { // foto (data URL) → Storage, savā mapē
+        const blob = await (await fetch(photo)).blob();
+        path = `${await uid()}/${Date.now()}.jpg`;
+        ok(await sb.storage.from('checkout').upload(path, blob, { contentType: 'image/jpeg' }));
+      }
+      return ok(await sb.rpc('check_out', { p_session: sessionId, p_lat: pos?.lat ?? null, p_lng: pos?.lng ?? null, p_acc: pos?.acc ?? null, p_photo: path }));
+    },
+    async lastCheckout() {
+      const r = ok(await sb.rpc('last_checkout'))?.[0];
+      return r ? { ...r, photo_url: await signed(r.photo_path) } : null;
+    },
+    async sessionPhoto(sessionId) {
+      return signed(ok(await sb.from('sessions').select('photo_path').eq('id', sessionId).single()).photo_path);
     },
     async reportNotVacated(pos = null, note = null) {
       return ok(await sb.rpc('report_not_vacated', { p_lat: pos?.lat ?? null, p_lng: pos?.lng ?? null, p_acc: pos?.acc ?? null, p_note: note || null }));
@@ -104,7 +120,7 @@ export function createSupabaseApi(cfg) {
     // ---------- mans konts ----------
     async mySessions() {
       const id = await uid();
-      return ok(await sb.from('sessions').select('*').eq('user_id', id).order('checked_in_at', { ascending: false }).limit(200));
+      return withPhotoFlag(ok(await sb.from('sessions').select('*').eq('user_id', id).order('checked_in_at', { ascending: false }).limit(200)));
     },
     async myLedger() {
       const id = await uid();
@@ -122,12 +138,12 @@ export function createSupabaseApi(cfg) {
     async removeMember(id) { ok(await sb.rpc('remove_member', { p_user: id })); },
     async restoreMember(id) { ok(await sb.rpc('restore_member', { p_user: id })); },
     async listInvites() { return ok(await sb.from('invites').select('*, used:profiles!invites_used_by_fkey(full_name)').order('created_at', { ascending: false })); },
-    async createInvite(note) { return ok(await sb.from('invites').insert({ note, created_by: await uid() }).select().single()); },
+    async createInvite(note, phone = null) { return ok(await sb.from('invites').insert({ note, phone, created_by: await uid() }).select().single()); },
     async deleteInvite(code) { ok(await sb.from('invites').delete().eq('code', code)); },
     async listSessions(fromIso, toIso) {
       const rows = ok(await sb.from('sessions').select('*, profiles!sessions_user_id_fkey(full_name)')
         .gte('checked_out_at', fromIso).lt('checked_out_at', toIso).order('checked_in_at'));
-      return rows.map(r => ({ ...r, full_name: r.profiles?.full_name || '?' }));
+      return withPhotoFlag(rows).map(r => ({ ...r, full_name: r.profiles?.full_name || '?' }));
     },
     async balances() { return ok(await sb.rpc('balances')); },
     async listLedgerAll() {
@@ -138,6 +154,18 @@ export function createSupabaseApi(cfg) {
       ok(await sb.rpc('record_payment', { p_user: userId, p_kind: kind, p_amount: amount, p_description: description, p_hours: hours ?? null }));
     },
     async closeMonth(monthDate) { return ok(await sb.rpc('close_month', { p_month: monthDate })); },
+    // ---------- bojājumu žurnāls ----------
+    async listIssues() {
+      const rows = ok(await sb.from('issues').select('*, profiles!issues_user_id_fkey(full_name)').order('created_at', { ascending: false }).limit(100));
+      return rows.map(r => ({ ...r, full_name: r.profiles?.full_name || '?' }));
+    },
+    async addIssue(text) {
+      const body = (text || '').trim().slice(0, 300);
+      if (body.length < 3) throw new Error('Apraksti, kas ir salūzis vai trūkst');
+      ok(await sb.from('issues').insert({ body }));
+    },
+    async resolveIssue(id, note) { ok(await sb.rpc('resolve_issue', { p_id: id, p_note: note || null })); },
+
     async listDevices() { return ok(await sb.from('devices').select('id,kind,name,location,enabled').order('id')); },
   };
 }

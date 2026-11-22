@@ -22,6 +22,11 @@ create table if not exists public.settings (
   box_lat               double precision not null default 56.990484, -- BOX, Viskaļu iela 22, Rīga
   box_lng               double precision not null default 24.185431,
   geo_radius_m          int not null default 250,             -- atļautais attālums no BOX (m)
+  bill_step_minutes     int not null default 30,              -- aprēķina solis pēc minimuma (0 = pa minūtēm)
+  bill_round_down_minutes int not null default 15,            -- atlikumu līdz šim (ieskaitot) noapaļo uz leju, vairāk — uz augšu
+  photo_required        boolean not null default true,        -- izčekojoties obligāts BOX foto
+  max_active_bookings   int not null default 2,               -- cik nākotnes rezervāciju drīkst būt vienam (0 = bez limita)
+  debt_warn_eur         numeric(8,2) not null default 30,     -- atgādinājums dalībniekam, ja uzkrāts vismaz tik (0 = nav)
   updated_at            timestamptz not null default now()
 );
 insert into public.settings (id) values (1) on conflict do nothing;
@@ -43,6 +48,7 @@ create table if not exists public.profiles (
 create table if not exists public.invites (
   code       text primary key default upper(substr(encode(gen_random_bytes(6),'hex'),1,8)),
   note       text,                                   -- kam domāts, piem. "Roberts"
+  phone      text,                                   -- telefons ielūguma nosūtīšanai (nav obligāts)
   created_by uuid references public.profiles(id),
   used_by    uuid references public.profiles(id),
   used_at    timestamptz,
@@ -75,9 +81,10 @@ create table if not exists public.sessions (
   checked_in_at  timestamptz not null default now(),
   checked_out_at timestamptz,
   minutes        int,                 -- faktiskās minūtes
-  billed_minutes int,                 -- ar minimumu (≥ 60)
+  billed_minutes int,                 -- aprēķina minūtes: minimums 60, tālāk pa 30 min (sk. bill_minutes)
   amount         numeric(8,2),        -- €
   closed_by      uuid references public.profiles(id),  -- ja izčekoja admins
+  photo_path     text,                -- BOX foto izčekojoties (Storage: checkout/<lietotājs>/<fails>.jpg)
   note           text
 );
 -- BOX ir viens → vienlaikus drīkst būt tikai viena atvērta sesija
@@ -146,18 +153,21 @@ create table if not exists public.rule_acceptances (
   accepted_at timestamptz not null default now(),
   primary key (user_id, version)
 );
-insert into public.rules_versions (version, body) values (1, $rules$1. BOX lieto tikai ar rezervāciju aplikācijā. Ja BOX ir brīvs, var iečekoties arī bez rezervācijas.
+insert into public.rules_versions (version, body) values (1, $rules$1. BOX lieto tikai ar rezervāciju aplikācijā. Ja BOX ir brīvs, var iečekoties arī bez rezervācijas. Vienam dalībniekam vienlaikus var būt ne vairāk kā 2 rezervācijas.
 2. Sākot darbu, iečekojies ar QR kodu BOX iekšpusē. Beidzot darbu, izčekojies. To var izdarīt tikai uz vietas.
-3. Maksa ir 2 € stundā par laiku no iečekošanās līdz izčekošanās. Mazākā maksa ir par 1 stundu.
-4. Izčekojies tikai tad, kad auto ir izbraukts un BOX ir sakopts.
+3. Maksa ir 2 € stundā. Mazākā maksa ir par 1 stundu, tālāk laiku skaita pa 30 minūtēm: līdz 15 minūtēm noapaļo uz leju, vairāk — uz augšu. Piemēri: 1 h 15 min = 1 h; 1 h 20 min = 1 h 30 min; 1 h 47 min = 2 h.
+4. Izčekojies tikai tad, kad auto ir izbraukts un BOX ir sakopts. Izčekojoties aplikācijā jānofotografē sakopts BOX — bez foto izčekoties nevar.
 5. Ja aizbrauc neizčekojies, laiks turpina skaitīties. Atgriezies un izčekojies vai uzreiz sazinies ar adminu.
 6. Ja atrodi BOX aizņemtu ar cita auto, nospied "BOX nav atbrīvots". Iepriekšējam lietotājam laiks tiks skaitīts tālāk.
 7. Ja BOX vajag ilgāk nekā parasti (avārija, sarežģīts remonts), sarunā to ar adminu. Admins uzliek HOLD, un to redz visi.
-8. Katra mēneša 1. datumā tiek saskaitīts, cik katrs ir lietojis. Norēķinās ar darbu BOX labā vai skaidrā naudā, vienojoties ar adminu.
-9. Nauda tiek tērēta tikai BOX uzturēšanai un instrumentiem. Kasi redz visi.
-10. Pacēlāju lieto tikai tas, kurš prot ar to droši strādāt. Par savu drošību un nodarītiem bojājumiem atbild pats lietotājs.
-11. BOX kodu nedod citiem. BOX lieto tikai grupas dalībnieki.
-12. Strīdus izšķir admins. Par noteikumu pārkāpšanu admins var slēgt piekļuvi.$rules$)
+8. Ja kaut kas ir salūzis vai trūkst, uzreiz ziņo par to aplikācijā.
+9. Katra mēneša 1. datumā tiek saskaitīts, cik katrs ir lietojis. Savu uzkrāto summu katrs redz aplikācijā.
+10. Uzkrāto summu dzēš ar papildu darbiem ārpus darba laika (piemēram, granulu papildināšana, lapu vai sniega tīrīšana) vai ar naudu. Par katru darbu un tā summu iepriekš vienojas ar adminu.
+11. Ja uzkrāto summu nenokārto, admins var slēgt piekļuvi BOX.
+12. Nauda tiek tērēta tikai BOX uzturēšanai un instrumentiem. Kasi redz visi.
+13. Pacēlāju lieto tikai tas, kurš prot ar to droši strādāt. Par savu drošību un nodarītiem bojājumiem atbild pats lietotājs.
+14. BOX kodu nedod citiem. BOX lieto tikai grupas dalībnieki.
+15. Strīdus izšķir admins. Par noteikumu pārkāpšanu admins var slēgt piekļuvi.$rules$)
 on conflict do nothing;
 
 -- ---------------------------------------------------------------------
@@ -181,6 +191,17 @@ create unique index if not exists holds_one_open on public.holds ((true)) where 
 -- ---------------------------------------------------------------------
 -- 7. Iekārtas — REZERVĒTS 2./3. posmam (Shelly relejs, kameras). Tagad neaktīvas.
 -- ---------------------------------------------------------------------
+create table if not exists public.issues (            -- bojājumu un trūkumu žurnāls
+  id          bigserial primary key,
+  user_id     uuid not null default auth.uid() references public.profiles(id),
+  body        text not null check (char_length(trim(body)) between 3 and 300),
+  status      text not null default 'open' check (status in ('open','done')),
+  created_at  timestamptz not null default now(),
+  resolved_at timestamptz,
+  resolved_by uuid references public.profiles(id),
+  resolution  text
+);
+
 create table if not exists public.devices (
   id         bigserial primary key,
   kind       text not null check (kind in ('shelly_lift','shelly_door','camera')),
@@ -317,10 +338,21 @@ create trigger on_auth_user_created after insert on auth.users
 -- DARBĪBAS (RPC)
 -- =====================================================================
 
+-- Aprēķina minūtes: minimums (60), tālāk pa soļiem (30); atlikumu līdz 15 min noapaļo uz leju, vairāk — uz augšu.
+-- 75 → 60, 80 → 90, 104 → 90, 107 → 120.
+create or replace function public.bill_minutes(p_min int) returns int
+language sql stable security definer set search_path = public as $$
+  select greatest(s.min_minutes,
+    case when s.bill_step_minutes <= 0 then p_min
+         when p_min % s.bill_step_minutes <= s.bill_round_down_minutes then p_min - p_min % s.bill_step_minutes
+         else p_min - p_min % s.bill_step_minutes + s.bill_step_minutes end)
+    from settings s where s.id = 1;
+$$;
+
 -- Rezervēt
 create or replace function public.create_booking(p_starts timestamptz, p_ends timestamptz, p_note text default null)
 returns bookings language plpgsql security definer set search_path = public as $$
-declare b bookings;
+declare b bookings; v_lim int;
 begin
   if not is_active() then raise exception 'Konts nav aktivizēts vai nav apstiprināti BOX noteikumi'; end if;
   if p_ends <= p_starts then raise exception 'Beigu laikam jābūt pēc sākuma'; end if;
@@ -328,6 +360,11 @@ begin
   if exists (select 1 from holds where ended_at is null
               and p_starts < greatest(expected_end, now()) and p_ends > starts_at) then
     raise exception 'Šajā laikā BOX ir uz HOLD — rezervē laiku pēc tā';
+  end if;
+  select max_active_bookings into v_lim from settings where id = 1;
+  if v_lim > 0 and (select count(*) from bookings bk where bk.user_id = auth.uid() and bk.status = 'active' and bk.ends_at > now()
+                      and not exists (select 1 from sessions se where se.booking_id = bk.id)) >= v_lim then
+    raise exception 'Tev jau ir % aktīvas rezervācijas — vispirms izmanto vai atcel kādu no tām', v_lim;
   end if;
   begin
     insert into bookings (user_id, starts_at, ends_at, note)
@@ -402,9 +439,9 @@ begin
   return ses;
 end $$;
 
--- Izčekoties (sava sesija — tikai pie BOX; admins var aizvērt jebkuru sesiju no jebkuras vietas)
+-- Izčekoties (sava sesija — tikai pie BOX un ar BOX foto; admins var aizvērt cita sesiju no jebkuras vietas bez foto)
 create or replace function public.check_out(p_session bigint default null, p_lat double precision default null,
-  p_lng double precision default null, p_acc double precision default null) returns sessions
+  p_lng double precision default null, p_acc double precision default null, p_photo text default null) returns sessions
 language plpgsql security definer set search_path = public as $$
 declare s settings; ses sessions; v_min int; v_bill int;
 begin
@@ -416,14 +453,23 @@ begin
     if found and ses.user_id <> auth.uid() and not is_admin() then raise exception 'Nav tiesību'; end if;
   end if;
   if not found then raise exception 'Nav atvērtas sesijas'; end if;
-  if ses.user_id = auth.uid() then perform geo_check(p_lat, p_lng, p_acc); end if;
+  if ses.user_id = auth.uid() then
+    perform geo_check(p_lat, p_lng, p_acc);
+    if s.photo_required then
+      if coalesce(p_photo, '') = '' or split_part(p_photo, '/', 1) <> auth.uid()::text
+         or not exists (select 1 from storage.objects o where o.bucket_id = 'checkout' and o.name = p_photo) then
+        raise exception 'Vispirms nofotografē sakoptu BOX — bez foto izčekoties nevar';
+      end if;
+    end if;
+  end if;
 
-  v_min  := greatest(1, ceil(extract(epoch from (now() - ses.checked_in_at)) / 60.0)::int);
-  v_bill := greatest(v_min, s.min_minutes);
+  v_min  := greatest(1, floor(extract(epoch from (now() - ses.checked_in_at)) / 60.0)::int);
+  v_bill := bill_minutes(v_min);
 
   update sessions set checked_out_at = now(), minutes = v_min, billed_minutes = v_bill,
          amount = round(v_bill / 60.0 * s.hourly_rate, 2),
-         closed_by = case when user_id <> auth.uid() then auth.uid() end
+         closed_by = case when user_id <> auth.uid() then auth.uid() end,
+         photo_path = case when user_id = auth.uid() then nullif(p_photo, '') end
    where id = ses.id returning * into ses;
 
   -- rezervācija: ja beidza agrāk → atbrīvo atlikušo laiku kalendārā
@@ -450,6 +496,16 @@ language sql stable security definer set search_path = public as $$
     left join reports r on r.session_id = se.id and r.status = 'open'
     left join profiles rp on rp.id = r.reporter_id
    where se.checked_out_at is null and is_active();
+$$;
+
+-- Pēdējā pabeigtā lietošana un tās foto — nākamais lietotājs redz, kādu BOX atstāja iepriekšējais
+create or replace function public.last_checkout()
+returns table (session_id bigint, user_id uuid, full_name text, checked_out_at timestamptz, photo_path text, by_admin boolean)
+language sql stable security definer set search_path = public as $$
+  select se.id, se.user_id, p.full_name, se.checked_out_at, se.photo_path, se.closed_by is not null
+    from sessions se join profiles p on p.id = se.user_id
+   where se.checked_out_at is not null and is_active()
+   order by se.checked_out_at desc limit 1;
 $$;
 
 -- Ziņot "BOX nav atbrīvots": pēdējā lietotāja sesija tiek atvērta no jauna, laiks skaitās no viņa iečekošanās brīža
@@ -570,8 +626,8 @@ begin
     if ses.user_id <> p_user then
       raise exception 'BOX šobrīd lieto cits lietotājs — vispirms izčeko viņu';
     end if;
-    v_min  := greatest(1, ceil(extract(epoch from (now() - ses.checked_in_at)) / 60.0)::int);
-    v_bill := greatest(v_min, s.min_minutes);
+    v_min  := greatest(1, floor(extract(epoch from (now() - ses.checked_in_at)) / 60.0)::int);
+    v_bill := bill_minutes(v_min);
     update sessions set checked_out_at = now(), minutes = v_min, billed_minutes = v_bill,
            amount = round(v_bill / 60.0 * s.hourly_rate, 2), closed_by = auth.uid(), note = 'Noslēgts, uzliekot HOLD'
      where id = ses.id;
@@ -661,15 +717,31 @@ begin
   end if;
 end $$;
 
--- Atlikumi visiem (admins) — parāds = uzkrātie slēgtie mēneši − samaksātais
+-- Uzkrājumi: balance = konta kustība (slēgtie mēneši − nokārtotais); pending = lietošana, kas vēl nav pārnesta uz kontu
+-- (mēnesis nav slēgts). Kopā uzkrāts = balance + pending. Dalībnieks redz tikai savu, admins — visus.
 create or replace function public.balances()
-returns table (user_id uuid, full_name text, balance numeric)
+returns table (user_id uuid, full_name text, balance numeric, pending numeric)
 language sql stable security definer set search_path = public as $$
-  select p.id, p.full_name, coalesce(sum(l.amount),0)
-    from profiles p left join ledger l on l.user_id = p.id
+  select p.id, p.full_name,
+         coalesce((select sum(l.amount) from ledger l where l.user_id = p.id), 0),
+         coalesce((select sum(se.amount) from sessions se
+                    where se.user_id = p.id and se.checked_out_at is not null
+                      and not exists (select 1 from ledger l where l.user_id = p.id and l.kind = 'usage'
+                            and l.period = date_trunc('month', se.checked_out_at at time zone 'Europe/Riga')::date)), 0)
+    from profiles p
    where is_admin() or p.id = auth.uid()
-   group by p.id, p.full_name order by p.full_name;
+   order by p.full_name;
 $$;
+
+-- Admins atzīmē bojājumu kā atrisinātu
+create or replace function public.resolve_issue(p_id bigint, p_note text default null) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if not is_admin() then raise exception 'Nav tiesību'; end if;
+  update issues set status = 'done', resolved_at = now(), resolved_by = auth.uid(), resolution = nullif(trim(coalesce(p_note, '')), '')
+   where id = p_id and status = 'open';
+  if not found then raise exception 'Ieraksts nav atrasts'; end if;
+end $$;
 
 -- =====================================================================
 -- RINDU LĪMEŅA DROŠĪBA (RLS)
@@ -685,6 +757,7 @@ alter table public.rule_acceptances enable row level security;
 alter table public.holds            enable row level security;
 alter table public.ledger        enable row level security;
 alter table public.cash_entries  enable row level security;
+alter table public.issues        enable row level security;
 alter table public.devices       enable row level security;
 alter table public.device_events enable row level security;
 
@@ -692,7 +765,8 @@ alter table public.device_events enable row level security;
 create policy settings_admin_all on public.settings for all using (is_admin()) with check (is_admin());
 create or replace view public.public_settings with (security_invoker = false) as
   select hourly_rate, min_minutes, checkin_early_minutes, walkin_minutes, noshow_enabled, noshow_minutes,
-         geo_enabled, geo_radius_m, box_lat, box_lng from settings;
+         geo_enabled, geo_radius_m, box_lat, box_lng,
+         bill_step_minutes, bill_round_down_minutes, photo_required, max_active_bookings, debt_warn_eur from settings;
 grant select on public.public_settings to authenticated;
 
 -- profiles: savu redz vienmēr; aktīvie redz citu vārdus; savu var labot (bez role/active)
@@ -736,8 +810,25 @@ create policy cash_select on public.cash_entries for select using (is_active());
 create policy cash_admin on public.cash_entries for all using (is_admin()) with check (is_admin());
 
 -- iekārtas: tikai admins (config satur IP/paroles)
+-- issues: redz un pievieno aktīvie dalībnieki; labo admins
+create policy issues_select on public.issues for select using (is_active());
+create policy issues_insert on public.issues for insert with check (user_id = auth.uid() and is_active() and status = 'open');
+create policy issues_admin on public.issues for all using (is_admin()) with check (is_admin());
+
 create policy devices_admin on public.devices for all using (is_admin()) with check (is_admin());
 create policy device_events_admin on public.device_events for all using (is_admin()) with check (is_admin());
+
+-- =====================================================================
+-- FOTO GLABĀTUVE (Supabase Storage): BOX foto izčekojoties.
+-- Augšupielādē tikai savā mapē (<lietotāja id>/...), skatās aktīvie dalībnieki, dzēš tikai admins.
+-- =====================================================================
+insert into storage.buckets (id, name, public) values ('checkout', 'checkout', false) on conflict (id) do nothing;
+create policy checkout_insert on storage.objects for insert to authenticated
+  with check (bucket_id = 'checkout' and (storage.foldername(name))[1] = auth.uid()::text and public.is_active());
+create policy checkout_select on storage.objects for select to authenticated
+  using (bucket_id = 'checkout' and public.is_active());
+create policy checkout_delete on storage.objects for delete to authenticated
+  using (bucket_id = 'checkout' and public.is_admin());
 
 -- =====================================================================
 -- AUTOMĀTISKĀ MĒNEŠA SLĒGŠANA — katra mēneša 1. datumā 03:05 (Rīgas laiks ≈ 01:05 UTC)

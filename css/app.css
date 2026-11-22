@@ -177,3 +177,10 @@ input, select, textarea { border-radius: 14px; }
 /* izslēgts dalībnieks */
 .removed-mark { width: 120px; height: 120px; border-radius: 60px; background: var(--red); display: flex; align-items: center; justify-content: center;
   margin: 28px auto 18px; box-shadow: 0 8px 24px rgba(179,38,30,.35); }
+
+/* ===== v1.4: foto, atgādinājums ===== */
+img.photo { width: 100%; border-radius: 16px; background: #000; max-height: 60vh; object-fit: contain; display: block; }
+img.thumb { width: 84px; height: 84px; border-radius: 14px; object-fit: cover; cursor: pointer; flex: none; border: 2px solid var(--line); }
+a.card.warn { display: block; background: #fff4d6; color: #5c4200; text-decoration: none; border: 2px solid #f2b632; }
+.btn.ph { padding: 2px 8px; min-height: 0; }
+[hidden] { display: none !important; }

@@ -1,14 +1,22 @@
 // DEMO datu slānis — tie paši noteikumi kā Supabase datubāzē, bet dati glabājas šajā pārlūkā (localStorage).
 // Paredzēts aplikācijas izmēģināšanai, pirms pieslēgta īstā datubāze.
 
-const KEY = 'box_demo_v3';
-const RULES_V1 = "1. BOX lieto tikai ar rezervāciju aplikācijā. Ja BOX ir brīvs, var iečekoties arī bez rezervācijas.\n2. Sākot darbu, iečekojies ar QR kodu BOX iekšpusē. Beidzot darbu, izčekojies. To var izdarīt tikai uz vietas.\n3. Maksa ir 2 € stundā par laiku no iečekošanās līdz izčekošanās. Mazākā maksa ir par 1 stundu.\n4. Izčekojies tikai tad, kad auto ir izbraukts un BOX ir sakopts.\n5. Ja aizbrauc neizčekojies, laiks turpina skaitīties. Atgriezies un izčekojies vai uzreiz sazinies ar adminu.\n6. Ja atrodi BOX aizņemtu ar cita auto, nospied \"BOX nav atbrīvots\". Iepriekšējam lietotājam laiks tiks skaitīts tālāk.\n7. Ja BOX vajag ilgāk nekā parasti (avārija, sarežģīts remonts), sarunā to ar adminu. Admins uzliek HOLD, un to redz visi.\n8. Katra mēneša 1. datumā tiek saskaitīts, cik katrs ir lietojis. Norēķinās ar darbu BOX labā vai skaidrā naudā, vienojoties ar adminu.\n9. Nauda tiek tērēta tikai BOX uzturēšanai un instrumentiem. Kasi redz visi.\n10. Pacēlāju lieto tikai tas, kurš prot ar to droši strādāt. Par savu drošību un nodarītiem bojājumiem atbild pats lietotājs.\n11. BOX kodu nedod citiem. BOX lieto tikai grupas dalībnieki.\n12. Strīdus izšķir admins. Par noteikumu pārkāpšanu admins var slēgt piekļuvi.";
+const KEY = 'box_demo_v4';
+const RULES_V1 = "1. BOX lieto tikai ar rezervāciju aplikācijā. Ja BOX ir brīvs, var iečekoties arī bez rezervācijas. Vienam dalībniekam vienlaikus var būt ne vairāk kā 2 rezervācijas.\n2. Sākot darbu, iečekojies ar QR kodu BOX iekšpusē. Beidzot darbu, izčekojies. To var izdarīt tikai uz vietas.\n3. Maksa ir 2 € stundā. Mazākā maksa ir par 1 stundu, tālāk laiku skaita pa 30 minūtēm: līdz 15 minūtēm noapaļo uz leju, vairāk — uz augšu. Piemēri: 1 h 15 min = 1 h; 1 h 20 min = 1 h 30 min; 1 h 47 min = 2 h.\n4. Izčekojies tikai tad, kad auto ir izbraukts un BOX ir sakopts. Izčekojoties aplikācijā jānofotografē sakopts BOX — bez foto izčekoties nevar.\n5. Ja aizbrauc neizčekojies, laiks turpina skaitīties. Atgriezies un izčekojies vai uzreiz sazinies ar adminu.\n6. Ja atrodi BOX aizņemtu ar cita auto, nospied \"BOX nav atbrīvots\". Iepriekšējam lietotājam laiks tiks skaitīts tālāk.\n7. Ja BOX vajag ilgāk nekā parasti (avārija, sarežģīts remonts), sarunā to ar adminu. Admins uzliek HOLD, un to redz visi.\n8. Ja kaut kas ir salūzis vai trūkst, uzreiz ziņo par to aplikācijā.\n9. Katra mēneša 1. datumā tiek saskaitīts, cik katrs ir lietojis. Savu uzkrāto summu katrs redz aplikācijā.\n10. Uzkrāto summu dzēš ar papildu darbiem ārpus darba laika (piemēram, granulu papildināšana, lapu vai sniega tīrīšana) vai ar naudu. Par katru darbu un tā summu iepriekš vienojas ar adminu.\n11. Ja uzkrāto summu nenokārto, admins var slēgt piekļuvi BOX.\n12. Nauda tiek tērēta tikai BOX uzturēšanai un instrumentiem. Kasi redz visi.\n13. Pacēlāju lieto tikai tas, kurš prot ar to droši strādāt. Par savu drošību un nodarītiem bojājumiem atbild pats lietotājs.\n14. BOX kodu nedod citiem. BOX lieto tikai grupas dalībnieki.\n15. Strīdus izšķir admins. Par noteikumu pārkāpšanu admins var slēgt piekļuvi.";
+const PHOTO_KEEP = 12; // demo režīmā glabā tikai pēdējos foto (pārlūka atmiņa ir maza)
 const MIN = 60000;
 
 function uuid() { return (crypto.randomUUID ? crypto.randomUUID() : 'id-' + Math.random().toString(36).slice(2)); }
 function code(n = 6) { return Array.from({ length: n }, () => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[Math.floor(Math.random() * 32)]).join(''); }
 function iso(d) { return new Date(d).toISOString(); }
 function round2(x) { return Math.round(x * 100) / 100; }
+// Aprēķina laiks: minimums, tālāk pa soļiem (30 min); atlikumu līdz 15 min noapaļo uz leju, vairāk — uz augšu
+export function billMinutes(m, st) {
+  const step = +st.bill_step_minutes || 0, min = +st.min_minutes || 0;
+  if (step <= 0) return Math.max(m, min);
+  const r = m % step, base = m - r;
+  return Math.max(r <= (+st.bill_round_down_minutes || 0) ? base : base + step, min);
+}
 function distanceM(lat1, lng1, lat2, lng2) {
   const r = x => x * Math.PI / 180;
   const a = Math.sin(r(lat2 - lat1) / 2) ** 2 + Math.cos(r(lat1)) * Math.cos(r(lat2)) * Math.sin(r(lng2 - lng1) / 2) ** 2;
@@ -35,12 +43,13 @@ function seed() {
     { id: bid++, user_id: P('Ilvars'), starts_at: at(4, 8), ends_at: at(4, 11), status: 'active', note: 'Izplūdes sistēma' },
   ];
   const sessions = [
-    { id: sid++, user_id: P('Roberts'), booking_id: 1, checked_in_at: at(-3, 17, 5), checked_out_at: at(-3, 19, 20), minutes: 135, billed_minutes: 135, amount: 4.5 },
+    { id: sid++, user_id: P('Roberts'), booking_id: 1, checked_in_at: at(-3, 17, 5), checked_out_at: at(-3, 19, 20), minutes: 135, billed_minutes: 120, amount: 4.0 },
     { id: sid++, user_id: P('Māris'), booking_id: 2, checked_in_at: at(-2, 9, 0), checked_out_at: at(-2, 9, 40), minutes: 40, billed_minutes: 60, amount: 2.0 },
   ];
   return {
     settings: { id: 1, hourly_rate: 2, min_minutes: 60, checkin_early_minutes: 15, walkin_minutes: 60, checkin_code: 'DEMO42', noshow_enabled: false, noshow_minutes: 30,
-      geo_enabled: true, box_lat: 56.990484, box_lng: 24.185431, geo_radius_m: 250 },
+      geo_enabled: true, box_lat: 56.990484, box_lng: 24.185431, geo_radius_m: 250,
+      bill_step_minutes: 30, bill_round_down_minutes: 15, photo_required: true, max_active_bookings: 2, debt_warn_eur: 30 },
     profiles, invites: [], bookings, sessions, ledger: [], cash: [
       { id: 1, entry_date: at(-10, 0).slice(0, 10), direction: 'out', category: 'instrumenti', amount: 39.9, description: 'Dinamometriskā atslēga (piemērs)' },
     ],
@@ -50,8 +59,8 @@ function seed() {
       { id: 3, kind: 'camera', name: 'Kamera 2', location: 'BOX labā puse', enabled: false },
     ],
     reports: [],
-    rules: [{ version: 1, body: RULES_V1, published_at: iso(Date.now()) }], acceptances: [], holds: [],
-    seq: { booking: bid, session: sid, ledger: 1, cash: 2, report: 1, hold: 1 },
+    rules: [{ version: 1, body: RULES_V1, published_at: iso(Date.now()) }], acceptances: [], holds: [], issues: [],
+    seq: { booking: bid, session: sid, ledger: 1, cash: 2, report: 1, hold: 1, issue: 1 },
     currentUser: null,
   };
 }
@@ -74,6 +83,20 @@ export function createDemoApi() {
   const openHold = () => db.holds.find(h => !h.ended_at);
   const cancelForHold = end => db.bookings.filter(b => b.status === 'active' && new Date(b.starts_at) < new Date(end) && new Date(b.ends_at) > Date.now())
     .forEach(b => { b.status = 'cancelled'; b.note = ((b.note || '') + ' (atcelts: HOLD)').trim(); });
+  const closeSession = (s, now, extra = {}) => {
+    const st = db.settings, m = Math.max(1, Math.floor((now - new Date(s.checked_in_at)) / MIN)), bill = billMinutes(m, st);
+    Object.assign(s, { checked_out_at: iso(now), minutes: m, billed_minutes: bill, amount: round2(bill / 60 * st.hourly_rate), ...extra });
+    const b = db.bookings.find(x => x.id === s.booking_id);
+    if (b) { b.status = 'completed'; if (new Date(b.ends_at) > now) b.ends_at = iso(Math.max(now, new Date(b.starts_at).getTime() + 1000)); }
+    db.reports.filter(x => x.session_id === s.id && x.status === 'open').forEach(x => { x.status = 'resolved'; x.resolved_at = iso(now); });
+  };
+  const prunePhotos = () => db.sessions.filter(s => s.photo).sort((a, b) => (b.checked_out_at || '9').localeCompare(a.checked_out_at || '9'))
+    .slice(PHOTO_KEEP).forEach(s => { s.photo = null; s.photo_pruned = true; });
+  // Sesijas, kas vēl nav pārnestas uz kontu (mēnesis nav slēgts)
+  const pendingOf = uid => round2(db.sessions.filter(s => s.user_id === uid && s.checked_out_at).filter(s => {
+    const d = new Date(s.checked_out_at), period = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+    return !db.ledger.some(l => l.user_id === uid && l.kind === 'usage' && l.period === period);
+  }).reduce((a, s) => a + s.amount, 0));
   const geoCheck = pos => {
     const st = db.settings;
     if (!st.geo_enabled) return;
@@ -118,6 +141,9 @@ export function createDemoApi() {
       need(!db.holds.some(h => !h.ended_at && new Date(s) < Math.max(new Date(h.expected_end), Date.now()) && new Date(e) > new Date(h.starts_at)),
         'Šajā laikā BOX ir uz HOLD — rezervē laiku pēc tā');
       need(!overlaps(s, e), 'Šis laiks jau ir aizņemts');
+      const lim = +db.settings.max_active_bookings || 0;
+      need(!lim || db.bookings.filter(x => x.user_id === me().id && x.status === 'active' && new Date(x.ends_at) > Date.now()
+        && !db.sessions.some(z => z.booking_id === x.id)).length < lim, `Tev jau ir ${lim} aktīvas rezervācijas — vispirms izmanto vai atcel kādu no tām`);
       const b = { id: db.seq.booking++, user_id: me().id, starts_at: iso(s), ends_at: iso(e), status: 'active', note: note || '' };
       db.bookings.push(b); save(); return b;
     },
@@ -156,20 +182,31 @@ export function createDemoApi() {
       const s = { id: db.seq.session++, user_id: me().id, booking_id: b.id, checked_in_at: iso(now), checked_out_at: null };
       db.sessions.push(s); save(); return s;
     },
-    async checkOut(sessionId = null, pos = null) {
+    async checkOut(sessionId = null, pos = null, photo = null) {
       const st = db.settings, now = Date.now();
       const s = sessionId ? db.sessions.find(x => x.id === sessionId && !x.checked_out_at)
         : db.sessions.find(x => x.user_id === me().id && !x.checked_out_at);
       need(s, 'Nav atvērtas sesijas');
-      need(s.user_id === me().id || isAdmin(), 'Nav tiesību');
-      if (s.user_id === me().id) geoCheck(pos);
-      const m = Math.max(1, Math.ceil((now - new Date(s.checked_in_at)) / MIN));
-      const bill = Math.max(m, st.min_minutes);
-      Object.assign(s, { checked_out_at: iso(now), minutes: m, billed_minutes: bill, amount: round2(bill / 60 * st.hourly_rate), closed_by: s.user_id !== me().id ? me().id : null });
-      const b = db.bookings.find(x => x.id === s.booking_id);
-      if (b) { b.status = 'completed'; if (new Date(b.ends_at) > now) b.ends_at = iso(Math.max(now, new Date(b.starts_at).getTime() + 1000)); }
-      db.reports.filter(x => x.session_id === s.id && x.status === 'open').forEach(x => { x.status = 'resolved'; x.resolved_at = iso(now); });
-      save(); return { ...s };
+      const own = s.user_id === me().id;
+      need(own || isAdmin(), 'Nav tiesību');
+      if (own) {
+        geoCheck(pos);
+        need(!st.photo_required || (typeof photo === 'string' && photo.startsWith('data:image/')), 'Vispirms nofotografē sakoptu BOX — bez foto izčekoties nevar');
+      }
+      closeSession(s, now, { closed_by: own ? null : me().id, photo: own ? photo || null : null });
+      prunePhotos();
+      try { save(); } catch (e) { s.photo = null; save(); }
+      const { photo: _p, ...rest } = s; return rest;
+    },
+    // Pēdējā pabeigtā lietošana un tās foto — lai nākamais redz, kādu BOX atstāja iepriekšējais
+    async lastCheckout() {
+      need(okUser(), NOT_OK);
+      const s = db.sessions.filter(x => x.checked_out_at).sort((a, b) => b.checked_out_at.localeCompare(a.checked_out_at))[0];
+      return s ? { session_id: s.id, user_id: s.user_id, full_name: name(s.user_id), checked_out_at: s.checked_out_at, photo_url: s.photo || null, by_admin: !!s.closed_by } : null;
+    },
+    async sessionPhoto(sessionId) {
+      const s = db.sessions.find(x => x.id === sessionId); need(s && (isAdmin() || okUser()), 'Nav tiesību');
+      return s.photo || null;
     },
     async reportNotVacated(pos = null, note = null) {
       need(okUser(), NOT_OK);
@@ -205,7 +242,7 @@ export function createDemoApi() {
           checked_in_at: s.checked_in_at, prev_checked_out_at: r.prev_checked_out_at, prev_amount: r.prev_amount }; });
     },
 
-    async mySessions() { return db.sessions.filter(s => s.user_id === me().id).sort((a, b) => b.checked_in_at.localeCompare(a.checked_in_at)); },
+    async mySessions() { return db.sessions.filter(s => s.user_id === me().id).sort((a, b) => b.checked_in_at.localeCompare(a.checked_in_at)).map(({ photo, ...s }) => ({ ...s, has_photo: !!photo })); },
     async myLedger() { return db.ledger.filter(l => l.user_id === me().id).sort((a, b) => b.created_at.localeCompare(a.created_at)); },
 
     async listCash() { return [...db.cash].sort((a, b) => b.entry_date.localeCompare(a.entry_date) || b.id - a.id); },
@@ -228,14 +265,14 @@ export function createDemoApi() {
       Object.assign(p, { active: true, removed_at: null }); save();
     },
     async listInvites() { return db.invites.map(i => ({ ...i, used: i.used_by ? { full_name: name(i.used_by) } : null })).reverse(); },
-    async createInvite(note) { need(isAdmin(), 'Nav tiesību'); const i = { code: code(8), note, created_at: iso(Date.now()) }; db.invites.push(i); save(); return i; },
+    async createInvite(note, phone = null) { need(isAdmin(), 'Nav tiesību'); const i = { code: code(8), note, phone: phone || null, created_at: iso(Date.now()) }; db.invites.push(i); save(); return i; },
     async deleteInvite(c) { db.invites = db.invites.filter(i => i.code !== c); save(); },
     async listSessions(f, t) {
-      return db.sessions.filter(s => s.checked_out_at && s.checked_out_at >= f && s.checked_out_at < t).sort((a, b) => a.checked_in_at.localeCompare(b.checked_in_at)).map(s => ({ ...s, full_name: name(s.user_id) }));
+      return db.sessions.filter(s => s.checked_out_at && s.checked_out_at >= f && s.checked_out_at < t).sort((a, b) => a.checked_in_at.localeCompare(b.checked_in_at)).map(({ photo, ...s }) => ({ ...s, has_photo: !!photo, full_name: name(s.user_id) }));
     },
     async balances() {
       return db.profiles.filter(p => isAdmin() || p.id === me().id).map(p => ({ user_id: p.id, full_name: p.full_name,
-        balance: round2(db.ledger.filter(l => l.user_id === p.id).reduce((a, l) => a + l.amount, 0)) })).sort((a, b) => a.full_name.localeCompare(b.full_name));
+        balance: round2(db.ledger.filter(l => l.user_id === p.id).reduce((a, l) => a + l.amount, 0)), pending: pendingOf(p.id) })).sort((a, b) => a.full_name.localeCompare(b.full_name));
     },
     async listLedgerAll() { return [...db.ledger].reverse().map(l => ({ ...l, full_name: name(l.user_id) })); },
     async recordPayment(userId, kind, amount, description, hours) {
@@ -292,18 +329,14 @@ export function createDemoApi() {
       return [...db.holds].reverse().map(h => { const p = db.profiles.find(x => x.id === h.user_id); return { ...h, full_name: p?.full_name || '?', phone: p?.phone || '' }; });
     },
     async startHold(userId, expectedEndIso, reason) {
-      need(isAdmin(), 'Nav tiesību'); const now = Date.now(), st = db.settings;
+      need(isAdmin(), 'Nav tiesību'); const now = Date.now();
       need(new Date(expectedEndIso) > now, 'Beigu laikam jābūt nākotnē');
       need(db.profiles.some(p => p.id === userId && p.active), 'Lietotājs nav atrasts');
       need(!openHold(), 'HOLD jau ir aktīvs — vispirms beidz esošo');
       const s = db.sessions.find(x => !x.checked_out_at);
       if (s) {
         need(s.user_id === userId, 'BOX šobrīd lieto cits lietotājs — vispirms izčeko viņu');
-        const m = Math.max(1, Math.ceil((now - new Date(s.checked_in_at)) / MIN)), bill = Math.max(m, st.min_minutes);
-        Object.assign(s, { checked_out_at: iso(now), minutes: m, billed_minutes: bill, amount: round2(bill / 60 * st.hourly_rate), closed_by: me().id, note: 'Noslēgts, uzliekot HOLD' });
-        const b = db.bookings.find(x => x.id === s.booking_id);
-        if (b) { b.status = 'completed'; if (new Date(b.ends_at) > now) b.ends_at = iso(Math.max(now, new Date(b.starts_at).getTime() + 1000)); }
-        db.reports.filter(x => x.session_id === s.id && x.status === 'open').forEach(x => { x.status = 'resolved'; x.resolved_at = iso(now); });
+        closeSession(s, now, { closed_by: me().id, note: 'Noslēgts, uzliekot HOLD' });
       }
       cancelForHold(expectedEndIso);
       const h = { id: db.seq.hold++, user_id: userId, starts_at: iso(now), expected_end: iso(expectedEndIso), ended_at: null,
@@ -324,6 +357,20 @@ export function createDemoApi() {
       if (amount > 0) db.ledger.push({ id: db.seq.ledger++, user_id: h.user_id, kind: 'hold', hours: null, amount: round2(amount),
         description: `HOLD ${d(h.starts_at)}–${d(now)}${now.getFullYear()}` + ((note || '').trim() ? ': ' + note.trim() : h.reason ? ': ' + h.reason : ''), created_at: iso(now) });
       save(); return { ...h };
+    },
+
+    // ---------- bojājumu žurnāls ----------
+    async listIssues() {
+      need(okUser(), NOT_OK);
+      return [...db.issues].reverse().map(i => ({ ...i, full_name: name(i.user_id) }));
+    },
+    async addIssue(text) {
+      need(okUser(), NOT_OK); need((text || '').trim().length >= 3, 'Apraksti, kas ir salūzis vai trūkst');
+      db.issues.push({ id: db.seq.issue++, user_id: me().id, body: text.trim().slice(0, 300), status: 'open', created_at: iso(Date.now()), resolved_at: null, resolution: null }); save();
+    },
+    async resolveIssue(id, note) {
+      need(isAdmin(), 'Nav tiesību'); const i = db.issues.find(x => x.id === id && x.status === 'open'); need(i, 'Ieraksts nav atrasts');
+      Object.assign(i, { status: 'done', resolved_at: iso(Date.now()), resolved_by: me().id, resolution: (note || '').trim() || null }); save();
     },
 
     async listDevices() { return db.devices; },

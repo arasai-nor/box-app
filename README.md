@@ -13,7 +13,7 @@ Kamēr `js/config.js` nav aizpildīts, aplikācija strādā **DEMO režīmā**: 
 ### 1. Datubāze (Supabase, bez maksas)
 1. https://supabase.com → **Start your project** → ielogojies ar GitHub (arasai-nor).
 2. **New project** → nosaukums `box`, reģions **Frankfurt (eu-central-1)**, izveido datubāzes paroli un saglabā to.
-3. Kreisajā izvēlnē **SQL Editor** → **New query** → ielīmē visu `supabase/schema.sql` saturu → **Run**.
+3. Kreisajā izvēlnē **SQL Editor** → **New query** → ielīmē visu `supabase/schema.sql` saturu → **Run**. Skripts izveido arī privātu foto krātuvi `checkout` (Storage) BOX foto glabāšanai.
 4. **Authentication → Sign In / Providers → Email**: izslēdz **Confirm email** (ielūguma kods jau aizsargā pret svešiem).
 5. **Database → Extensions** → ieslēdz **pg_cron**. Tad SQL Editor palaid `schema.sql` beigās esošo bloku (noņem `--` komentāru zīmes), lai mēnesis slēgtos automātiski 1. datumā.
 6. **Project Settings → API**: nokopē **Project URL** un **anon public** atslēgu un ieraksti tās `js/config.js`.
