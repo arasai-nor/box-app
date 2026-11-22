@@ -204,3 +204,6 @@ table { font-size: 15.5px; } th { font-size: 14px; }
 .alert-away { font-size: 18px; line-height: 1.4; }
 a.awaybar { position: fixed; top: 0; left: 0; right: 0; z-index: 80; display: block; padding: calc(12px + env(safe-area-inset-top, 0px)) 16px 12px; background: var(--red); color: #fff;
   font-size: 17px; font-weight: 700; line-height: 1.35; text-decoration: none; box-shadow: 0 6px 20px rgba(0,0,0,.35); animation: boxpulse 1.2s infinite; }
+/* v1.6.2: admina cilnes vairākās rindās — visas redzamas telefonā bez ritināšanas */
+.tabs { flex-wrap: wrap; overflow-x: visible; }
+.tabs a { padding: 8px 12px; }
