@@ -4,7 +4,6 @@
 -- =====================================================================
 
 create extension if not exists btree_gist;
-create extension if not exists pgcrypto;
 
 -- ---------------------------------------------------------------------
 -- 1. Iestatījumi (viena rinda)
@@ -15,7 +14,7 @@ create table if not exists public.settings (
   min_minutes           int not null default 60,              -- minimālā maksa (min)
   checkin_early_minutes int not null default 15,              -- cik agri drīkst iečekoties
   walkin_minutes        int not null default 60,              -- iečekošanās bez rezervācijas: cik BOX jābūt brīvam
-  checkin_code          text not null default upper(substr(encode(gen_random_bytes(6),'hex'),1,6)),
+  checkin_code          text not null default upper(substr(replace(gen_random_uuid()::text,'-',''),1,6)),
   noshow_enabled        boolean not null default false,       -- 2. posms
   noshow_minutes        int not null default 30,              -- 2. posms
   geo_enabled           boolean not null default true,        -- atrašanās vietas pārbaude
@@ -46,7 +45,7 @@ create table if not exists public.profiles (
 );
 
 create table if not exists public.invites (
-  code       text primary key default upper(substr(encode(gen_random_bytes(6),'hex'),1,8)),
+  code       text primary key default upper(substr(replace(gen_random_uuid()::text,'-',''),1,8)),
   note       text,                                   -- kam domāts, piem. "Roberts"
   phone      text,                                   -- telefons ielūguma nosūtīšanai (nav obligāts)
   created_by uuid references public.profiles(id),
@@ -818,6 +817,18 @@ create policy issues_admin on public.issues for all using (is_admin()) with chec
 
 create policy devices_admin on public.devices for all using (is_admin()) with check (is_admin());
 create policy device_events_admin on public.device_events for all using (is_admin()) with check (is_admin());
+
+-- =====================================================================
+-- PIEKĻUVES TIESĪBAS (Data API). Tabulām un funkcijām piekļūst tikai ielogoti lietotāji;
+-- ko katrs drīkst redzēt un darīt, nosaka RLS politikas un pārbaudes funkcijās. Neielogotiem (anon) — nekas.
+-- =====================================================================
+revoke all on all tables in schema public from anon, public;
+revoke all on all sequences in schema public from anon, public;
+revoke execute on all functions in schema public from anon, public;
+grant usage on schema public to authenticated;
+grant select, insert, update, delete on all tables in schema public to authenticated;
+grant usage, select on all sequences in schema public to authenticated;
+grant execute on all functions in schema public to authenticated;
 
 -- =====================================================================
 -- FOTO GLABĀTUVE (Supabase Storage): BOX foto izčekojoties.

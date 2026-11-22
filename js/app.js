@@ -629,7 +629,7 @@ async function viewAccount() {
       <div class="sp"></div><button class="btn primary block">Saglabāt</button></form></div>
     <button class="btn ghost block" id="rules">📋 BOX noteikumi</button><div class="sp"></div>
     <button class="btn ghost block" id="out">Iziet no konta</button>
-    <p class="center muted small">BOX v1.5</p>`;
+    <p class="center muted small">BOX v1.6</p>`;
   main.querySelector('#rules').onclick = () => {
     const r = state.rules;
     modal(`<h3>BOX noteikumi</h3><div class="rules">${rulesHtml(r.body)}</div>

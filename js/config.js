@@ -1,9 +1,10 @@
 // BOX aplikācijas konfigurācija.
-// Kamēr SUPABASE_URL ir tukšs, aplikācija strādā DEMO režīmā (dati glabājas tikai šajā pārlūkā).
-// Pēc Supabase projekta izveides ielīmē šeit vērtības no: Supabase → Project Settings → API.
+// Ja SUPABASE_URL ir tukšs, aplikācija strādā DEMO režīmā (dati glabājas tikai šajā pārlūkā).
+// Vērtības: Supabase → Project Settings → API Keys. Šeit drīkst būt TIKAI publiskā (publishable/anon) atslēga —
+// tā ir paredzēta ievietošanai aplikācijā; datus sargā datubāzes noteikumi (RLS). Slepeno (secret) atslēgu šeit nekad neliec.
 export const CONFIG = {
-  SUPABASE_URL: '',        // piem. 'https://abcdxyz.supabase.co'
-  SUPABASE_ANON_KEY: '',   // "anon public" atslēga (drīkst būt publiska)
+  SUPABASE_URL: 'https://xbslerbyyvkancretoby.supabase.co',
+  SUPABASE_ANON_KEY: 'sb_publishable_pUWQF5HeyJrP0pAI_BNeIQ_Bdc2qJdo',   // publiskā atslēga
   APP_NAME: 'BOX',
   TIMEZONE: 'Europe/Riga',
 };
