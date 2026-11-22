@@ -1,0 +1,19 @@
+# Uztur bezmaksas Supabase projektu nomodā: Supabase aptur projektu pēc 7 dienām bez aktivitātes.
+# Katru dienu izsauc nekaitīgu funkciju keepalive() (tā neatklāj nekādus datus).
+# Palaist ar roku: GitHub → Actions → "Supabase keepalive" → Run workflow.
+name: Supabase keepalive
+
+on:
+  schedule:
+    - cron: '17 4 * * *'   # katru dienu ~06:17 pēc Rīgas laika
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase
+        run: |
+          curl -fsS -X POST "https://xbslerbyyvkancretoby.supabase.co/rest/v1/rpc/keepalive" \
+            -H "apikey: sb_publishable_pUWQF5HeyJrP0pAI_BNeIQ_Bdc2qJdo" \
+            -H "Content-Type: application/json" -d '{}'

@@ -830,6 +830,13 @@ grant select, insert, update, delete on all tables in schema public to authentic
 grant usage, select on all sequences in schema public to authenticated;
 grant execute on all functions in schema public to authenticated;
 
+-- Uztur bezmaksas projektu nomodā: GitHub (.github/workflows/supabase-keepalive.yml) katru dienu izsauc šo funkciju.
+-- Vienīgā funkcija, ko drīkst izsaukt neielogots (anon); neatklāj nekādus datus.
+create or replace function public.keepalive() returns int
+language sql stable security definer set search_path = public as $$ select count(*)::int from settings $$;
+revoke execute on function public.keepalive() from public;
+grant execute on function public.keepalive() to anon, authenticated;
+
 -- =====================================================================
 -- FOTO GLABĀTUVE (Supabase Storage): BOX foto izčekojoties.
 -- Augšupielādē tikai savā mapē (<lietotāja id>/...), skatās aktīvie dalībnieki, dzēš tikai admins.
